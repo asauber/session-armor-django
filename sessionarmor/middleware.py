@@ -29,8 +29,8 @@ class SessionArmorMiddleware(object):
         for name, value in request.META.iteritems():
             print name, ':', value
 
-    def process_response(self, request):
+    def process_response(self, request, response):
         '''
         Process stages of the Session Armor protocol for outgoing requests
         '''
-        pass
+        return response
