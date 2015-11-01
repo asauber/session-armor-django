@@ -2,7 +2,7 @@ from distutils.core import setup
 
 setup(
     name='session-armor-django',
-    packages=['sessionarmor'],
+    packages=['sessionarmor_django'],
     license='MIT',
     version='0.1.0',
     description='Session Armor authentication procotol, Django middleware',
