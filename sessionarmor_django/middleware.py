@@ -7,6 +7,7 @@ This software is licensed under the MIT open source license. See LICENSE.txt
 '''
 
 
+import base64
 from django.conf import settings
 
 
@@ -42,6 +43,28 @@ def get_client_state(header):
         return CLIENT_READY
 
 
+def select_hash_module(header):
+    '''
+    Given a header dictionary, select a hash function supported by the
+    client.
+
+    Return the Python module implementing this hash function expected by
+    the hmac module.
+    '''
+    # base64 decode the value of the ready key
+    bitmask_str = base64.b64decode(header['r'])
+    print 'hash algo bitmask as hex', bitmask_str.encode('hex')
+
+
+def process_ready_header(header):
+    '''
+    Decode base64 value of ready header
+    Parse into bit vector
+    Select a hash algorithm supported by the client using the bit vector
+    '''
+    hashmod = select_hash_module(header) 
+
+
 class SessionArmorMiddleware(object):
     '''
     Implementation of the Session Armor protocol.
@@ -55,7 +78,8 @@ class SessionArmorMiddleware(object):
         '''
         header = header_to_dict(request.META['HTTP_X_S_ARMOR'])
         state = get_client_state(header)
-        print state
+        if state == CLIENT_READY:
+            process_ready_header(header)
 
     def process_response(self, request, response):
         '''
