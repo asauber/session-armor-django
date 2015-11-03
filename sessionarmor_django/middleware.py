@@ -9,9 +9,18 @@ This software is licensed under the MIT open source license. See LICENSE.txt
 
 import base64
 from django.conf import settings
+import hashlib
 
 
 CLIENT_READY = 'ready'
+
+# the following are stored in order of preference
+HASH_ALGO_MASKS = (
+    (1 << 0, hashlib.sha256),
+    (1 << 1, hashlib.sha384),
+    (1 << 2, hashlib.sha512),
+    (1 << 3, lambda: hashlib.new('ripemd160')),
+)
 
 
 def header_to_dict(header, outer_sep=';', inner_sep=':'):
@@ -56,6 +65,14 @@ def build_bit_vector_from_bytes(s):
     return vector
 
 
+def select_digest_module_from_vector(algos_vector):
+    for bitmask in HASH_ALGO_MASKS:
+        if bitmask[0] & algos_vector:
+            return bitmask[1]
+    raise NotImplementedError(
+        'Client ready header bitmask did not match any hash implementations.')
+
+
 def select_hash_module(header):
     '''
     Given a header dictionary, select a hash function supported by the
@@ -66,8 +83,10 @@ def select_hash_module(header):
     '''
     # base64 decode the value of the ready key into a byte string
     ready_str = base64.b64decode(header['r'])
-    # store the length of the bit vector and the bit vector as integers
-    client_hash_algos = build_bit_vector_from_bytes(ready_str[1:])
+    # store the bit vector as an integer
+    algos_vector = build_bit_vector_from_bytes(ready_str[1:])
+    digest_mod = select_digest_module_from_vector(algos_vector)
+    return digest_mod
 
 
 def process_ready_header(header):
