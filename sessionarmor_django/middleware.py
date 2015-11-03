@@ -43,17 +43,31 @@ def get_client_state(header):
         return CLIENT_READY
 
 
+def build_bit_vector_from_bytes(s):
+    '''
+    convert a byte string into an integer
+    Input: '\x9e\x2c'
+    Output: 40492 
+    bin(Output): '0b1001111000101100'
+    '''
+    vector = 0
+    for i, byte in enumerate(s):
+        vector += ord(s[-i + 1]) * (256 ** i)
+    return vector
+
+
 def select_hash_module(header):
     '''
     Given a header dictionary, select a hash function supported by the
     client.
 
-    Return the Python module implementing this hash function expected by
+    Return the Python module implementing this hash function as expected by
     the hmac module.
     '''
-    # base64 decode the value of the ready key
-    bitmask_str = base64.b64decode(header['r'])
-    print 'hash algo bitmask as hex', bitmask_str.encode('hex')
+    # base64 decode the value of the ready key into a byte string
+    ready_str = base64.b64decode(header['r'])
+    # store the length of the bit vector and the bit vector as integers
+    client_hash_algos = build_bit_vector_from_bytes(ready_str[1:])
 
 
 def process_ready_header(header):
