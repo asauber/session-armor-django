@@ -7,8 +7,8 @@ This software is licensed under the MIT open source license. See LICENSE.txt
 '''
 
 
-import base64
 from django.conf import settings
+import base64
 import hashlib
 
 
@@ -16,9 +16,9 @@ CLIENT_READY = 'ready'
 
 # the following are stored in order of preference
 HASH_ALGO_MASKS = (
-    (1 << 0, hashlib.sha256),
-    (1 << 1, hashlib.sha384),
     (1 << 2, hashlib.sha512),
+    (1 << 1, hashlib.sha384),
+    (1 << 0, hashlib.sha256),
     (1 << 3, lambda: hashlib.new('ripemd160')),
 )
 
