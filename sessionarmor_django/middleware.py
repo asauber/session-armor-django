@@ -7,7 +7,9 @@ This software is licensed under the MIT open source license. See LICENSE.txt
 '''
 
 
-from django.conf import settings
+# pylint: disable=no-self-use
+
+
 import base64
 import hashlib
 
@@ -40,11 +42,14 @@ def header_to_dict(header, outer_sep=';', inner_sep=':'):
     # split key/value tokens
     kvs = (kv.split(inner_sep) for kv in kvs)
     # parse key/value tokens
-    d = {kv[0]: kv[1] for kv in kvs if len(kv) == 2}
-    return d
+    digest = {kv[0]: kv[1] for kv in kvs if len(kv) == 2}
+    return digest
 
 
 def validate_ready_header(header):
+    '''
+    validate that there is only one header key and it is 'r'
+    '''
     return len(header) == 1 and header.keys()[0] == 'r'
 
 
@@ -56,20 +61,24 @@ def get_client_state(header):
         return CLIENT_READY
 
 
-def build_bit_vector_from_bytes(s):
+def build_bit_vector_from_bytes(bstr):
     '''
     convert a byte string into an integer
     Input: '\x9e\x2c'
-    Output: 40492 
+    Output: 40492
     bin(Output): '0b1001111000101100'
     '''
     vector = 0
-    for i, byte in enumerate(s):
-        vector += ord(s[-i]) * (256 ** i)
+    for i, _ in enumerate(bstr):
+        vector += ord(bstr[-i]) * (256 ** i)
     return vector
 
 
-def select_digest_module_from_vector(algos_vector):
+def select_digest_module(algos_vector):
+    '''
+    Given a bit vector indicating supported hash algorithms, return a Python
+    hash module for the strongest digest algorithm
+    '''
     for bitmask in HASH_ALGO_MASKS:
         if bitmask[0] & algos_vector:
             return bitmask[1]
@@ -93,7 +102,7 @@ def select_hash_module(header):
     ready_str = base64.b64decode(header['r'])
     # store the bit vector as an integer
     algos_vector = build_bit_vector_from_bytes(ready_str[1:])
-    digest_mod = select_digest_module_from_vector(algos_vector)
+    digest_mod = select_digest_module(algos_vector)
     return digest_mod
 
 
@@ -103,7 +112,7 @@ def process_client_ready(header):
     Output: server Session Armor headers for a new session
     Side Effects: A nonce-based replay vector persisted externally
     '''
-    hashmod = select_hash_module(header)
+    hashmodule = select_hash_module(header)
 
 
 class SessionArmorMiddleware(object):
@@ -132,4 +141,7 @@ class SessionArmorMiddleware(object):
 
     @staticmethod
     def do_nothing():
+        '''
+        Do absolutely nothing
+        '''
         pass
