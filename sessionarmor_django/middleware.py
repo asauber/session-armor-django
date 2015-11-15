@@ -25,13 +25,13 @@ HASH_ALGO_MASKS = (
 
 def header_to_dict(header, outer_sep=';', inner_sep=':'):
     '''
-    Takes a header value of the form:
+    Takes a header value string of the form:
     c:<base64data0>;T_re:1367448031;h:<base64data1>;ignored0;
     Returns a dictionary:
     {
-        'c': <base64data0>,
         'T_re': 1367448031,
         'h': <base64data1>,
+        'c': <base64data0>,
     }
     '''
     kvs = header.split(outer_sep)
@@ -44,11 +44,15 @@ def header_to_dict(header, outer_sep=';', inner_sep=':'):
     return d
 
 
+def validate_ready_header(header):
+    return len(header) == 1 and header.keys()[0] == 'r'
+
+
 def get_client_state(header):
     '''
-    Given a header dictionary, return the name of the client state
+    Given a header dictionary, return the name of the client state.
     '''
-    if len(header) == 1 and header.keys()[0] == 'r':
+    if validate_ready_header(header):
         return CLIENT_READY
 
 
@@ -61,7 +65,7 @@ def build_bit_vector_from_bytes(s):
     '''
     vector = 0
     for i, byte in enumerate(s):
-        vector += ord(s[-i + 1]) * (256 ** i)
+        vector += ord(s[-i]) * (256 ** i)
     return vector
 
 
@@ -80,6 +84,10 @@ def select_hash_module(header):
 
     Return the Python module implementing this hash function as expected by
     the hmac module.
+
+    1. Decode base64 value of ready header
+    2. Parse into bit vector
+    3. Select a hash algorithm supported by the client using the bit vector
     '''
     # base64 decode the value of the ready key into a byte string
     ready_str = base64.b64decode(header['r'])
@@ -89,13 +97,13 @@ def select_hash_module(header):
     return digest_mod
 
 
-def process_ready_header(header):
+def process_client_ready(header):
     '''
-    Decode base64 value of ready header
-    Parse into bit vector
-    Select a hash algorithm supported by the client using the bit vector
+    Input: client Session Armor headers when in a valid ready state
+    Output: server Session Armor headers for a new session
+    Side Effects: A nonce-based replay vector persisted externally
     '''
-    hashmod = select_hash_module(header) 
+    hashmod = select_hash_module(header)
 
 
 class SessionArmorMiddleware(object):
@@ -109,13 +117,19 @@ class SessionArmorMiddleware(object):
         '''
         Process stages of the Session Armor protocol for incoming requests
         '''
-        header = header_to_dict(request.META['HTTP_X_S_ARMOR'])
-        state = get_client_state(header)
-        if state == CLIENT_READY:
-            process_ready_header(header)
+        pass
 
     def process_response(self, request, response):
         '''
         Process stages of the Session Armor protocol for outgoing requests
         '''
+        header = header_to_dict(request.META['HTTP_X_S_ARMOR'])
+        state = get_client_state(header)
+        if state == CLIENT_READY:
+            process_client_ready(header)
+
         return response
+
+    @staticmethod
+    def do_nothing():
+        pass
