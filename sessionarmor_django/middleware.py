@@ -7,17 +7,16 @@ This software is licensed under the MIT open source license. See LICENSE.txt
 '''
 
 
-# pylint: disable=no-self-use
-
-
 import base64
+from django.conf import settings
+from django.core.exceptions import PermissionDenied
 import hashlib
 
 
 CLIENT_READY = 'ready'
 
-# the following are stored in order of preference
 HASH_ALGO_MASKS = (
+    # these hashing algorithms are in order of preference
     (1 << 2, hashlib.sha512),
     (1 << 1, hashlib.sha384),
     (1 << 0, hashlib.sha256),
@@ -122,17 +121,31 @@ class SessionArmorMiddleware(object):
     Session Armor is an HTTP session authentication protocol hardened against
     request replay and request forgery.
     '''
+
+    def __init__(self):
+        try:
+            self.strict = settings.STRICT_S_ARMOR
+        except AttributeError:
+            self.strict = False
+
     def process_request(self, request):
         '''
-        Process stages of the Session Armor protocol for incoming requests
+        Process states of the Session Armor protocol for incoming requests
         '''
         pass
 
     def process_response(self, request, response):
         '''
-        Process stages of the Session Armor protocol for outgoing requests
+        Process states of the Session Armor protocol for outgoing requests
         '''
-        header = header_to_dict(request.META['HTTP_X_S_ARMOR'])
+        header_str = request.META.get('HTTP_X_S_ARMOR', None)
+
+        if not self.strict and not header_str:
+            return response
+        elif self.strict and not header_str:
+            raise PermissionDenied
+
+        header = header_to_dict(header_str)
         state = get_client_state(header)
         if state == CLIENT_READY:
             process_client_ready(header)

@@ -8,6 +8,12 @@ This software is licensed under the MIT open source license. See LICENSE.txt
 
 `python setup.py install`
 
+## Usage
+
+Add `'sessionarmor_django.middleware.SessionArmorMiddleware'` to your
+`MIDDLEWARE_CLASSES` setting.
+
+
 ## Development
 
 `pip install -e .`
