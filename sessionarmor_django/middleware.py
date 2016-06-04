@@ -8,13 +8,20 @@ This software is licensed under the MIT open source license. See LICENSE.txt
 
 
 import base64
+from Crypto import Random
+from Crypto.Random import random as crypt_random
+from Crypto.Cipher import AES
+from Crypto.Util import Counter
+from datetime import datetime, timedelta
 from django.conf import settings
 from django.core.exceptions import PermissionDenied
 import hashlib
+import logging
 
 
+COUNTER_BITS = 128
 CLIENT_READY = 'ready'
-
+EPOCH_DATETIME = datetime.utcfromtimestamp(0)
 HASH_ALGO_MASKS = (
     # these hashing algorithms are in order of preference
     (1 << 2, hashlib.sha512),
@@ -22,6 +29,12 @@ HASH_ALGO_MASKS = (
     (1 << 0, hashlib.sha256),
     (1 << 3, lambda: hashlib.new('ripemd160')),
 )
+LOGGER = logging.getLogger(__name__)
+MINUTES_14_DAYS = 20160
+assert len(settings.SECRET_KEY) >= AES.block_size, \
+    "Django settings.SECRET_KEY must be at least {} bytes".format(
+        AES.block_size)
+SECRET_KEY = bytes(settings.SECRET_KEY[:AES.block_size])
 
 
 def header_to_dict(header, outer_sep=';', inner_sep=':'):
@@ -105,13 +118,85 @@ def select_hash_module(header):
     return digest_mod
 
 
-def process_client_ready(header):
+def is_creating_session(response):
+    """
+    Is this response creating a new session?
+    """
+    sessionid = response.cookies.get('sessionid', None)
+    sessionid = getattr(sessionid, 'value', None)
+    return bool(sessionid)
+
+
+def extract_session_id(response):
+    """
+    Remove a sessionid from a response and return it as a string
+    """
+    sessionid = response.cookies['sessionid']
+    del response.cookies['sessionid']
+    return sessionid
+
+
+def get_expiration_second():
+    """
+    Get expiration time for a new Session Armor session as seconds since epoch
+    """
+    duration_minutes = get_setting('S_ARMOR_SESSION_MINUTES',
+                                   MINUTES_14_DAYS)
+    minutes_delta = timedelta(minutes=duration_minutes)
+    expiration_time = datetime.now() + minutes_delta
+    return str((expiration_time - EPOCH_DATETIME).total_seconds())
+
+
+def generate_hmac_key():
+    """
+    Generate a new key for use by the client and server to sign requests
+    """
+    return Random.new().read(AES.block_size)
+
+
+def encrypt_opaque(sessionid, hmac_key, expiration_time):
+    ctr_init = crypt_random.getrandbits(COUNTER_BITS)
+    counter = Counter.new(COUNTER_BITS, initial_value=ctr_init)
+    cipher = AES.new(SECRET_KEY, AES.MODE_CTR, counter=counter)
+    plaintext = '|'.join((sessionid, hmac_key, expiration_time))
+    LOGGER.debug("plaintext %s", plaintext)
+    ciphertext = cipher.encrypt(plaintext)
+    hashmod = hashlib.sha256()
+    hashmod.update(ciphertext)
+    cipherhash = hashmod.digest()
+    return ctr_init, cipherhash, ciphertext
+
+
+def begin_session(header, sessionid):
     '''
     Input: client Session Armor headers when in a valid ready state
     Output: server Session Armor headers for a new session
     Side Effects: A nonce-based replay vector persisted externally
     '''
+    # Create opaque token
+    # Components: Session ID, HMAC Key, Expiration Time
+    hmac_key = generate_hmac_key()
+    # TODO: Take the expiration time from the session cookie?
+    # TODO: Extend based on activity? Think about a hard and fast 5 minute
+    #       expiration time. It's likely for the session to expire after a
+    #       legitimate request while the user is still active.
+    expiration_time = get_expiration_second()
+    counter_init, cipherhash, opaque = encrypt_opaque(
+        sessionid, hmac_key, expiration_time)
+    LOGGER.debug("counter_init %s, cipherhash %s, opaque %s",
+            counter_init, cipherhash, opaque)
     hashmodule = select_hash_module(header)
+
+
+def get_setting(attribute, default):
+    """
+    Returns the value of a Django setting named by the string, attribute, or
+    a default value
+    """
+    try:
+        return settings.__getattr__(attribute)
+    except AttributeError:
+        return default
 
 
 class SessionArmorMiddleware(object):
@@ -123,16 +208,24 @@ class SessionArmorMiddleware(object):
     '''
 
     def __init__(self):
-        try:
-            self.strict = settings.STRICT_S_ARMOR
-        except AttributeError:
-            self.strict = False
+        self.strict = get_setting('STRICT_S_ARMOR', False)
 
     def process_request(self, request):
         '''
         Process states of the Session Armor protocol for incoming requests
         '''
-        pass
+        header_str = request.META.get('HTTP_X_S_ARMOR', None)   
+
+        if not self.strict and not header_str:
+            return None
+        elif self.strict and not header_str:
+            # If another middleware's process_request raises an Exception
+            # before this one, then the following PermissionDenied exception
+            # will not be raised. This could be considered a breach of
+            # authentication if any of the exception handlers called in the
+            # lifecycle of Django's BaseHandler allow an authenticated action
+            # to proceed.
+            raise PermissionDenied('Client does not support Session Armor')
 
     def process_response(self, request, response):
         '''
@@ -140,15 +233,19 @@ class SessionArmorMiddleware(object):
         '''
         header_str = request.META.get('HTTP_X_S_ARMOR', None)
 
-        if not self.strict and not header_str:
+        if not header_str:
             return response
-        elif self.strict and not header_str:
-            raise PermissionDenied
 
         header = header_to_dict(header_str)
         state = get_client_state(header)
-        if state == CLIENT_READY:
-            process_client_ready(header)
+
+        if (state == CLIENT_READY and request.is_secure()
+                and is_creating_session(response)):
+            # Begin a new protected session
+            sessionid = extract_session_id(response).value
+            LOGGER.debug("Creating new SessionArmor session from ID %s",
+                         sessionid)
+            begin_session(header, sessionid)
 
         return response
 
