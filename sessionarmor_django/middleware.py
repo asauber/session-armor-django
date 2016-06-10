@@ -58,6 +58,14 @@ def header_to_dict(header, outer_sep=';', inner_sep=':'):
     return digest
 
 
+def tuples_to_header(tuples, outer_sep=';', inner_sep=':'):
+    """
+    Takes a list of (k, v) string tuples and returns a string
+    for the Session Armor header value
+    """
+    return outer_sep.join([inner_sep.join(tup) for tup in tuples])
+
+
 def validate_ready_header(header):
     '''
     validate that there is only one header key and it is 'r'
@@ -95,27 +103,30 @@ def select_digest_module(algos_vector):
         if bitmask[0] & algos_vector:
             return bitmask[1]
     raise NotImplementedError(
-        'Client ready header bitmask did not match any hash implementations.')
+        'HMAC algorithm bitmask did not match any hash implementations.')
 
 
-def select_hash_module(header):
+def select_hash_algo(header):
     '''
     Given a header dictionary, select a hash function supported by the
     client.
 
-    Return the Python module implementing this hash function as expected by
-    the hmac module.
+    Return a bitmask denoting the selected module.
 
     1. Decode base64 value of ready header
     2. Parse into bit vector
     3. Select a hash algorithm supported by the client using the bit vector
+    4. Return the bitmask for the selected hash module
     '''
     # base64 decode the value of the ready key into a byte string
     ready_str = base64.b64decode(header['r'])
     # store the bit vector as an integer
     algos_vector = build_bit_vector_from_bytes(ready_str[1:])
-    digest_mod = select_digest_module(algos_vector)
-    return digest_mod
+    for bitmask in HASH_ALGO_MASKS:
+        if bitmask[0] & algos_vector:
+            return bitmask[0]
+    raise NotImplementedError(
+        'Client ready header bitmask did not match any hash implementations.')
 
 
 def is_creating_session(response):
@@ -185,8 +196,16 @@ def begin_session(header, sessionid):
         sessionid, hmac_key, expiration_time)
     LOGGER.debug("counter_init %s, cipherhash %s, opaque %s",
             counter_init, cipherhash, opaque)
-    hashmodule = select_hash_module(header)
+    hashalgo = select_hash_algo(header)
 
+    kvs = (
+        ('s', base64.b64encode(opaque)),
+        ('ctr', base64.b64encode(str(counter_init))),
+        ('hC', base64.b64encode(cipherhash)),
+        ('Kh', base64.b64encode(hmac_key)),
+        ('h', base64.b64encode(str(hashalgo)))
+    )
+    return tuples_to_header(kvs)
 
 def get_setting(attribute, default):
     """
@@ -236,17 +255,19 @@ class SessionArmorMiddleware(object):
         if not header_str:
             return response
 
-        header = header_to_dict(header_str)
-        state = get_client_state(header)
+        request_header = header_to_dict(header_str)
+        state = get_client_state(request_header)
 
+        response_header = ''
         if (state == CLIENT_READY and request.is_secure()
                 and is_creating_session(response)):
             # Begin a new protected session
             sessionid = extract_session_id(response).value
             LOGGER.debug("Creating new SessionArmor session from ID %s",
                          sessionid)
-            begin_session(header, sessionid)
+            response_header = begin_session(request_header, sessionid)
 
+        response['X-S-Armor'] = response_header
         return response
 
     @staticmethod
