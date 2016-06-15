@@ -63,7 +63,8 @@ def tuples_to_header(tuples, outer_sep=';', inner_sep=':'):
     Takes a list of (k, v) string tuples and returns a string
     for the Session Armor header value
     """
-    return outer_sep.join([inner_sep.join(tup) for tup in tuples])
+    encoded_tuples = [(tup[0], base64.b64encode(tup[1])) for tup in tuples]
+    return outer_sep.join([inner_sep.join(tup) for tup in encoded_tuples])
 
 
 def validate_ready_header(header):
@@ -144,7 +145,7 @@ def extract_session_id(response):
     """
     sessionid = response.cookies['sessionid']
     del response.cookies['sessionid']
-    return sessionid
+    return sessionid.value
 
 
 def get_expiration_second():
@@ -199,11 +200,13 @@ def begin_session(header, sessionid):
     hashalgo = select_hash_algo(header)
 
     kvs = (
-        ('s', base64.b64encode(opaque)),
-        ('ctr', base64.b64encode(str(counter_init))),
-        ('hC', base64.b64encode(cipherhash)),
-        ('Kh', base64.b64encode(hmac_key)),
-        ('h', base64.b64encode(str(hashalgo)))
+        ('s', opaque),
+        # TODO: Can we encode the integers in binary format as well?
+        ('ctr', str(counter_init)),
+        ('hC', cipherhash),
+        ('Kh', hmac_key),
+        # Would we want to?
+        ('h', str(hashalgo))
     )
     return tuples_to_header(kvs)
 
@@ -262,7 +265,7 @@ class SessionArmorMiddleware(object):
         if (state == CLIENT_READY and request.is_secure()
                 and is_creating_session(response)):
             # Begin a new protected session
-            sessionid = extract_session_id(response).value
+            sessionid = extract_session_id(response)
             LOGGER.debug("Creating new SessionArmor session from ID %s",
                          sessionid)
             response_header = begin_session(request_header, sessionid)
