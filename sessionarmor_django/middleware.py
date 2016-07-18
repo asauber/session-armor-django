@@ -204,12 +204,14 @@ def encrypt_opaque(sessionid, hmac_key, expiration_time):
     plaintext = '|'.join((sessionid, hmac_key, expiration_time))
     LOGGER.debug("plaintext %s", plaintext)
     ciphertext = cipher.encrypt(plaintext)
+    # Encrypt then MAC
     mac = hmac.new(SECRET_KEY, ciphertext, hashlib.sha256)
     ciphermac = mac.digest()
     return ctr_init, ciphermac, ciphertext
 
 
 def decrypt_opaque(opaque, ctr_init, ciphermac):
+    # MAC then Decrypt
     mac = hmac.new(SECRET_KEY, opaque, hashlib.sha256)
     if not hmac.compare_digest(mac.digest(), ciphermac):
         raise ValueError
@@ -317,7 +319,7 @@ class SessionArmorMiddleware(object):
         header_str = request.META.get('HTTP_X_S_ARMOR', None)   
 
         if not self.strict and not header_str:
-            return None
+            return
         elif self.strict and not header_str:
             # Disallow requests from clients that do not support SessionArmor
 
@@ -341,15 +343,14 @@ class SessionArmorMiddleware(object):
                 sessionid = validate_request(request_header)
             except SessionExpired:
                 # TODO: return HTTPResponse with "Session Expired"
-                return None
+                return
             except HmacInvalid:
-                return None
+                return
 
         if sessionid:
-            # inject session cookie
-            pass
+            request.COOKIES[settings.SESSION_COOKIE_NAME] = sessionid
         else:
-            return None
+            return
 
     def process_response(self, request, response):
         '''
