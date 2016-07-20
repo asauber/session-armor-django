@@ -1,6 +1,6 @@
 # Session Armor Protocol, Django Middleware Implementation
 
-Copyright (C) 2013 - 2015 Andrew Sauber
+Copyright (C) 2015 - 2016 Andrew Sauber
 
 This software is licensed under the MIT open source license. See LICENSE.txt
 
@@ -24,3 +24,9 @@ https://docs.djangoproject.com/en/1.9/ref/views/#the-403-http-forbidden-view.
 ## Development
 
 `pip install -e .`
+
+## License
+
+Licensed under the Affero GPLv3. This is to discourage you from using it in production until it's production-ready. ;)
+
+A more permissive lisence may be used in the future.
