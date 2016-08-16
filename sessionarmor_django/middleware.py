@@ -599,11 +599,13 @@ def auth_header_values(request, header_mask, extra_headers):
     values = []
     for header in headers:
         if header == 'Host':
-            header_val = request.get_host()
-            values.append(request.get_host()
+            values.append(request.get_host())
             continue
-        values.append(request.META.get(
-                'HTTP_' + header.upper().replace('-', '_'), None))
+
+        value = (request.META.get('HTTP_' + header.upper().replace('-', '_'),
+                                  None))
+        if value:
+            values.append(value)
 
     return values
 
