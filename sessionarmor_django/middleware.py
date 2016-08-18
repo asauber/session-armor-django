@@ -14,6 +14,7 @@ import hashlib
 import hmac
 import logging
 import time
+import json
 from datetime import datetime, timedelta
 
 from Crypto import Random
@@ -21,6 +22,7 @@ from Crypto.Cipher import AES
 from Crypto.Random import random as crypt_random
 from Crypto.Util import Counter
 from django.conf import settings
+from django.core.cache import caches
 from django.core.exceptions import PermissionDenied
 from django.contrib.sessions.exceptions import InvalidSessionKey
 
@@ -309,6 +311,8 @@ AUTH_HEADER_MASKS = {
     'MIME-Version': (1 << 54)
 }
 
+noncecache = caches['sessionarmor']
+
 
 class SessionExpired(Exception):
     '''The session has expired''' 
@@ -400,6 +404,7 @@ def get_client_state(header):
 def pack_mask(mask):
     '''
     pack an integer as a byte string with this format
+    bit length of mask cannot exceed 256
 
     byte0       byte1, byte2 ...
     <num_bytes> <little-endian bytestring>
@@ -567,14 +572,19 @@ def begin_session(header, sessionid, packed_header_mask):
             counter_init, ciphermac, opaque)
     packed_hash_mask = select_hash_mask(header)
 
-    kvs = (
+    kvs = [
         ('s', opaque),
         ('ctr', counter_init),
         ('mC', ciphermac),
         ('Kh', hmac_key),
         ('h', packed_hash_mask),
         ('ah', packed_header_mask)
-    )
+    ]
+
+    if get_setting('S_ARMOR_NONCE_REPLAY_PREVENTION', False):
+        n = crypt_random.getrandbits(32)
+        kvs.append(('n', int_to_bytes(n)))
+
     return tuples_to_header(kvs)
 
 
@@ -623,7 +633,8 @@ def validate_request(request, request_header):
     except ValueError:
         raise InvalidSessionKey # Django handles this
 
-    LOGGER.debug("request data %s %s %s", sessionid, hmac_key, expiration_time)
+    LOGGER.debug("request data %s %s %s",
+                 sessionid, hmac_key.decode('latin1'), expiration_time)
 
     # Session expiration check
     if expiration_time <= int(time.time()):
@@ -631,11 +642,13 @@ def validate_request(request, request_header):
 
     # HMAC validation
     # Performs time-based and nonce-based replay prevention if present
-    # Rebuild HMAC input
+
     # TODO: check if using nonce
     # using_nonce = bool based on request_header['ah']
-    using_nonce = False
-    hmac_input = [request_header['n'], '+'] if using_nonce else ['+']
+    using_nonce = True
+
+    # Rebuild HMAC input
+    hmac_input = [request_header['n'].decode('latin1'), '+'] if using_nonce else ['+']
     hmac_input.append(request_header['t'])
     extra_headers = request_header.get('eah', [])
     hmac_input += auth_header_values(request, request_header['ah'],
@@ -643,20 +656,50 @@ def validate_request(request, request_header):
     hmac_input.append(request.path)
     hmac_input.append(request.body or '')
     hmac_input = '|'.join(hmac_input)
+    # unicode object to bytestring with ordinals greater than 128
+    hmac_input = hmac_input.encode('latin1')
 
+    # Perform HMAC validation
     our_mac = client_hmac(request_header['h'], hmac_key, hmac_input)
     hmac_valid = hmac.compare_digest(our_mac, request_header['c'])
 
     if not hmac_valid:
         raise PermissionDenied("Invalid client HMAC, request is not authentic")
 
+    # Validate that request has not expired "time based expiry"
+    # TODO test that this is comparing the right values
+    if time.time() >= int(request_header['t']):
+        raise PermissionDenied("Request has expired")
+
+    # Validate that nonce has not been used before
+    # TODO test that this is comparing the right values
+    if using_nonce:
+        nonces = noncecache.get(sessionid)
+        nonces = nonces if nonces else []
+        if nonces and request_header['n'] in nonces:
+            raise PermissionDenied("Request nonce has been seen before")
+        nonces.append(request_header['n'])
+        noncecache.set(sessionid, nonces, None)
+
     return sessionid
+
+
+def validate_session_expiry(request, request_header):
+    try:
+        _, _, expiration_time = decrypt_opaque(
+            request_header['s'], request_header['ctr'], request_header['sm'])
+    except ValueError:
+        raise InvalidSessionKey # Django handles this
+
+    # Session expiration check
+    if expiration_time <= int(time.time()):
+        raise SessionExpired
 
 
 def invalidate_session(request_header):
     try:
         _, hmac_key, _ = decrypt_opaque(
-                request_header['s'], request_header['ctr'], request_header['mC'])
+            request_header['s'], request_header['ctr'], request_header['mC'])
     except ValueError:
         return ''
     mac = client_hmac(request_header['h'], hmac_key, 'Session Invalid')
@@ -742,8 +785,8 @@ class SessionArmorMiddleware(object):
                                             self.packed_header_mask)
         elif state == CLIENT_SIGNED_REQUEST:
             try:
-                # TODO: fastpath for expiration only check?
-                validate_request(request, request_header)
+                # fastpath for expire check only
+                validate_session_expiry(request, request_header)
             except SessionExpired:
                 response_header = invalidate_session(request_header)
 
