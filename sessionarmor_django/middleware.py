@@ -27,6 +27,8 @@ from django.core.exceptions import PermissionDenied
 from django.contrib.sessions.exceptions import InvalidSessionKey
 
 COUNTER_BITS = 128
+RECIEPT_VECTOR_BITS = 64
+INITIAL_RECIEPT_VECTOR = (2 ** 64) - 1
 
 CLIENT_READY = 'ready'
 CLIENT_SIGNED_REQUEST = 'request'
@@ -654,7 +656,7 @@ def validate_request(request, request_header):
     hmac_input += auth_header_values(request, request_header['ah'],
                                      extra_headers)
     hmac_input.append(request.path)
-    hmac_input.append(request.body or '')
+    hmac_input.append('') # hmac_input.append(request.body or '')
     # unicode objects bytestring for ordinals greater than 128
     hmac_input = [x.decode('latin1').encode('latin1') for x in hmac_input]
     hmac_input = '|'.join(hmac_input)
@@ -676,16 +678,45 @@ def validate_request(request, request_header):
         raise PermissionDenied(message)
 
     # Validate that nonce has not been used before
-    # TODO test that this is comparing the right values
     if using_nonce:
-        nonces = noncecache.get(sessionid)
-        nonces = nonces if nonces else []
-        if nonces and request_header['n'] in nonces:
+        request_nonce = bytes_to_int(request_header['n'])
+        nonce_tup = noncecache.get(sessionid)
+        if nonce_tup:
+            latest_nonce, reciept_vector = nonce_tup
+        else:
+            latest_nonce, reciept_vector = request_nonce - 1, INITIAL_RECIEPT_VECTOR
+
+        if request_nonce == latest_nonce:
             message = "Request nonce has been seen before"
             LOGGER.debug(message)
             raise PermissionDenied(message)
-        nonces.append(request_header['n'])
-        noncecache.set(sessionid, nonces, None)
+
+        import ipdb; ipdb.set_trace()
+
+        delta = latest_nonce - request_nonce
+
+        if delta < 0:
+            # This a "future" nonce
+            latest_nonce = request_nonce
+            # Shift our current vector to the left
+            reciept_vector <<= -delta
+            # And indicate that this new nonce has been seen
+            reciept_vector |= 0x01
+        elif delta > 0 and delta < RECIEPT_VECTOR_BITS:
+            # This is a "past" nonce that we have the ability to check
+            if reciept_vector & (1 << delta):
+                message = "Request nonce has been seen before"
+                LOGGER.debug(message)
+                raise PermissionDenied(message)
+            else:
+                reciept_vector |= 1 << delta
+        elif delta > 0 and delta >= RECIEPT_VECTOR_BITS:
+            message = "Nonce is too old to validate"
+            LOGGER.debug(message)
+            raise PermissionDenied(message)
+
+        reciept_vector &= INITIAL_RECIEPT_VECTOR
+        noncecache.set(sessionid, (latest_nonce, reciept_vector), None)
 
     return sessionid
 
