@@ -648,28 +648,32 @@ def validate_request(request, request_header):
     using_nonce = True
 
     # Rebuild HMAC input
-    hmac_input = [request_header['n'].decode('latin1'), '+'] if using_nonce else ['+']
+    hmac_input = [request_header['n'], '+'] if using_nonce else ['+']
     hmac_input.append(request_header['t'])
     extra_headers = request_header.get('eah', [])
     hmac_input += auth_header_values(request, request_header['ah'],
                                      extra_headers)
     hmac_input.append(request.path)
     hmac_input.append(request.body or '')
+    # unicode objects bytestring for ordinals greater than 128
+    hmac_input = [x.decode('latin1').encode('latin1') for x in hmac_input]
     hmac_input = '|'.join(hmac_input)
-    # unicode object to bytestring with ordinals greater than 128
-    hmac_input = hmac_input.encode('latin1')
 
     # Perform HMAC validation
     our_mac = client_hmac(request_header['h'], hmac_key, hmac_input)
     hmac_valid = hmac.compare_digest(our_mac, request_header['c'])
 
     if not hmac_valid:
-        raise PermissionDenied("Invalid client HMAC, request is not authentic")
+        message = "Invalid client HMAC"
+        LOGGER.debug(message)
+        raise PermissionDenied(message)
 
     # Validate that request has not expired "time based expiry"
     # TODO test that this is comparing the right values
     if time.time() >= int(request_header['t']):
-        raise PermissionDenied("Request has expired")
+        message = "Request has expired"
+        LOGGER.debug(message)
+        raise PermissionDenied(message)
 
     # Validate that nonce has not been used before
     # TODO test that this is comparing the right values
@@ -677,7 +681,9 @@ def validate_request(request, request_header):
         nonces = noncecache.get(sessionid)
         nonces = nonces if nonces else []
         if nonces and request_header['n'] in nonces:
-            raise PermissionDenied("Request nonce has been seen before")
+            message = "Request nonce has been seen before"
+            LOGGER.debug(message)
+            raise PermissionDenied(message)
         nonces.append(request_header['n'])
         noncecache.set(sessionid, nonces, None)
 
