@@ -6,7 +6,41 @@ Copyright (C) 2015 - 2016 Andrew Sauber
 This software is licensed under the MIT open source license. See LICENSE.txt
 
 TODO: Audit for comparison-based timing attacks
+
+Example configuration variables:
+S_ARMOR_STRICT = True
+S_ARMOR_SESSION_MINUTES = 5
+S_ARMOR_AUTH_HEADERS = [
+    'Host',
+    'User-Agent',
+    'Accept',
+    'Accept-Encoding',
+    'Accept-Language',
+    'Referer',
+    'Cookie',
+    'Accept-Charset',
+    'Range',
+    'Date',
+    'Authorization',
+    'Origin',
+    'DNT',
+    'X-Csrf-Token',
+]
+# Must have a persistent Django cache named "sessionarmor" configured for this
+# feature to work
+# "persistent" means:
+#   * TIMEOUT is set to None
+#   * MAX_ENTRIES is set larger than your max active sessions (maybe millions)
+#   * CULL_FREQUENCY is set to float('inf') or culling is disabled
+#   * The cache supports no-expiry, by passing None as the timeout
+S_ARMOR_NONCE_REPLAY_PREVENTION = True
+S_ARMOR_EXTRA_AUTHENTICATED_HEADERS = [
+    'X-Client-App-Version',
+    'X-Legacy-App',
+]
 '''
+
+
 
 
 import base64
