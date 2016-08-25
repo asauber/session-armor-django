@@ -587,6 +587,10 @@ def begin_session(header, sessionid, packed_header_mask):
         n = crypt_random.getrandbits(32)
         kvs.append(('n', int_to_bytes(n)))
 
+    eah = get_setting('S_ARMOR_EXTRA_AUTHENTICATED_HEADERS', [])
+    if eah:
+        kvs.append(('eah', ",".join(eah)))
+
     return tuples_to_header(kvs)
 
 
@@ -608,6 +612,7 @@ def auth_header_values(request, header_mask, extra_headers):
     If headers are not present in the request they are not included in the list
     '''
     headers = parse_header_mask(header_mask)
+    headers = headers + extra_headers
     values = []
     for header in headers:
         if header == 'Host':
@@ -622,7 +627,7 @@ def auth_header_values(request, header_mask, extra_headers):
     return values
 
 
-def client_hmac(algo_mask, key, string):
+def server_hmac(algo_mask, key, string):
     digestmod = select_hash_module(algo_mask)
     mac = hmac.new(key, string, digestmod)
     return mac.digest()
@@ -652,17 +657,37 @@ def validate_request(request, request_header):
     # Rebuild HMAC input
     hmac_input = [request_header['n'], '+'] if using_nonce else ['+']
     hmac_input.append(request_header['t'])
-    extra_headers = request_header.get('eah', [])
+    extra_headers = request_header.get('eah', None)
+    extra_headers = extra_headers.split(',') if extra_headers else []
     hmac_input += auth_header_values(request, request_header['ah'],
                                      extra_headers)
     hmac_input.append(request.path)
-    hmac_input.append('') # hmac_input.append(request.body or '')
-    # unicode objects bytestring for ordinals greater than 128
+    # Body authentication requires patching Chromium as follows
+    # (as of 2016-08-24)
+    # diff --git
+    #   a/extensions/browser/api/web_request/web_request_event_details.cc
+    #   b/extensions/browser/api/web_request/web_request_event_details.cc
+    # index a9f2f83..835b0eb5 100644
+    # --- a/extensions/browser/api/web_request/web_request_event_details.cc
+    # +++ b/extensions/browser/api/web_request/web_request_event_details.cc
+    # @@ -84,7 +84,6
+    # @@ void WebRequestEventDetails::SetRequestBody(
+    #            const net::URLRequest* request) {
+    #        if (presenters[i]->Succeeded()) {
+    #          request_body->Set(kKeys[i], presenters[i]->Result());
+    #          some_succeeded = true;
+    # -        break;
+    #        }
+    #      }
+    #    }
+    hmac_input.append(request.body or '')
+    # unicode objects to bytestring for ordinals greater than 128
     hmac_input = [x.decode('latin1').encode('latin1') for x in hmac_input]
     hmac_input = '|'.join(hmac_input)
 
     # Perform HMAC validation
-    our_mac = client_hmac(request_header['h'], hmac_key, hmac_input)
+    import ipdb; ipdb.set_trace()
+    our_mac = server_hmac(request_header['h'], hmac_key, hmac_input)
     hmac_valid = hmac.compare_digest(our_mac, request_header['c'])
 
     if not hmac_valid:
@@ -684,14 +709,13 @@ def validate_request(request, request_header):
         if nonce_tup:
             latest_nonce, reciept_vector = nonce_tup
         else:
-            latest_nonce, reciept_vector = request_nonce - 1, INITIAL_RECIEPT_VECTOR
+            latest_nonce, reciept_vector = (request_nonce - 1,
+                                            INITIAL_RECIEPT_VECTOR)
 
         if request_nonce == latest_nonce:
             message = "Request nonce has been seen before"
             LOGGER.debug(message)
             raise PermissionDenied(message)
-
-        import ipdb; ipdb.set_trace()
 
         delta = latest_nonce - request_nonce
 
@@ -739,7 +763,7 @@ def invalidate_session(request_header):
             request_header['s'], request_header['ctr'], request_header['mC'])
     except ValueError:
         return ''
-    mac = client_hmac(request_header['h'], hmac_key, 'Session Invalid')
+    mac = server_hmac(request_header['h'], hmac_key, 'Session Invalid')
     return tuples_to_header((('i', mac),))
 
 
