@@ -2,8 +2,6 @@
 
 Copyright (C) 2015 - 2016 Andrew Sauber
 
-This software is licensed under the MIT open source license. See LICENSE.txt
-
 ## Installation
 
 `python setup.py install`
