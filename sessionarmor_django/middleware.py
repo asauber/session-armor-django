@@ -520,13 +520,13 @@ def select_hash_mask(header):
         'Client ready header bitmask did not match any hash implementations.')
 
 
-def is_creating_session(response):
+def is_modifying_session(response):
     """
     Is this response creating a new session?
     """
     sessionid = response.cookies.get(settings.SESSION_COOKIE_NAME, None)
     sessionid = getattr(sessionid, 'value', None)
-    return bool(sessionid)
+    return bool(sessionid is not None)
 
 
 def extract_session_id(response):
@@ -772,10 +772,10 @@ def validate_session_expiry(request, request_header):
 def invalidate_session(request_header):
     try:
         _, hmac_key, _ = decrypt_opaque(
-            request_header['s'], request_header['ctr'], request_header['mC'])
+            request_header['s'], request_header['ctr'], request_header['cm'])
     except ValueError:
         return ''
-    mac = server_hmac(request_header['h'], hmac_key, 'Session Invalid')
+    mac = server_hmac(request_header['h'], hmac_key, 'Session Expired')
     return tuples_to_header((('i', mac),))
 
 
@@ -843,7 +843,7 @@ class SessionArmorMiddleware(object):
             return response
 
         sessionid = None
-        if request.is_secure() and is_creating_session(response):
+        if request.is_secure() and is_modifying_session(response):
             sessionid = extract_session_id(response)
 
         request_header = header_to_dict(header_str)
@@ -856,14 +856,17 @@ class SessionArmorMiddleware(object):
             response_header = begin_session(request_header, sessionid,
                                             self.packed_header_mask)
         elif state == CLIENT_SIGNED_REQUEST:
+            # Session invalidation conditions
+
+            # Check if the session has expired
             try:
                 validate_session_expiry(request, request_header)
             except SessionExpired:
                 response_header = invalidate_session(request_header)
 
-            # TODO: Find out what a logout response looks like and invalidate
-            # on that as well.
-
+            # Check if the server is deleting the session
+            if sessionid == '':
+                response_header = invalidate_session(request_header)
 
         response['X-S-Armor'] = response_header
         return response
