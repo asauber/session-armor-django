@@ -5,7 +5,7 @@ Copyright (C) 2015 - 2016 Andrew Sauber
 
 This software is licensed under the MIT open source license. See LICENSE.txt
 
-TODO: Audit for comparison-based timing attacks
+TODO: Audit for timing attacks
 
 Example configuration variables:
 S_ARMOR_STRICT = True
@@ -767,6 +767,7 @@ def validate_request(request, request_header):
                 LOGGER.debug(message)
                 raise PermissionDenied(message)
             else:
+                # Set the bit in the bit vector
                 reciept_vector |= 1 << delta
         elif delta > 0 and delta >= RECIEPT_VECTOR_BITS:
             message = "Nonce is too old to validate"
@@ -846,7 +847,6 @@ class SessionArmorMiddleware(object):
             try:
                 sessionid = validate_request(request, request_header)
             except SessionExpired:
-                # TODO: return HTTPResponse with "Session Expired"
                 return
             except HmacInvalid:
                 return
@@ -880,10 +880,13 @@ class SessionArmorMiddleware(object):
                                             self.packed_header_mask)
         elif state == CLIENT_SIGNED_REQUEST:
             try:
-                # fastpath for expire check only
                 validate_session_expiry(request, request_header)
             except SessionExpired:
                 response_header = invalidate_session(request_header)
+
+            # TODO: Find out what a logout response looks like and invalidate
+            # on that as well.
+
 
         response['X-S-Armor'] = response_header
         return response
