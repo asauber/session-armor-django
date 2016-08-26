@@ -3,9 +3,7 @@ Session Armor Protocol, Django Middleware Implementation
 
 Copyright (C) 2015 - 2016 Andrew Sauber
 
-This software is licensed under the MIT open source license. See LICENSE.txt
-
-TODO: Audit for timing attacks
+This software is licensed under AGPLv3 open source license. See LICENSE.txt
 
 Example configuration variables:
 S_ARMOR_STRICT = True
