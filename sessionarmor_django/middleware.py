@@ -647,14 +647,13 @@ def validate_request(request, request_header):
         LOGGER.debug(message)
         raise PermissionDenied(message)
 
-    # Validate that request has not expired "time based expiry"
-    # TODO test that this is comparing the right values
+    # Validate that the request has not expired (time-based replay prevention)
     if time.time() >= int(request_header['t']):
         message = "Request has expired"
         LOGGER.debug(message)
         raise PermissionDenied(message)
 
-    # Validate that nonce has not been used before
+    # Validate that nonce has not been used before (absolute replay prevention)
     if using_nonce:
         request_nonce = bytes_to_int(request_header['n'])
         nonce_tup = noncecache.get(sessionid)
