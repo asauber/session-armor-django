@@ -41,8 +41,6 @@ S_ARMOR_EXTRA_AUTHENTICATED_HEADERS = [
 '''
 
 
-
-
 import base64
 import hashlib
 import hmac
@@ -611,8 +609,8 @@ def begin_session(header, sessionid, packed_header_mask):
     kvs = [
         ('s', opaque),
         ('ctr', counter_init),
-        ('mC', ciphermac),
-        ('Kh', hmac_key),
+        ('cm', ciphermac),
+        ('kh', hmac_key),
         ('h', packed_hash_mask),
         ('ah', packed_header_mask)
     ]
@@ -670,7 +668,7 @@ def server_hmac(algo_mask, key, string):
 def validate_request(request, request_header):
     try:
         sessionid, hmac_key, expiration_time = decrypt_opaque(
-            request_header['s'], request_header['ctr'], request_header['sm'])
+            request_header['s'], request_header['ctr'], request_header['cm'])
     except ValueError:
         raise InvalidSessionKey # Django handles this
 
@@ -684,9 +682,7 @@ def validate_request(request, request_header):
     # HMAC validation
     # Performs time-based and nonce-based replay prevention if present
 
-    # TODO: check if using nonce
-    # using_nonce = bool based on request_header['ah']
-    using_nonce = True
+    using_nonce = bool(request_header.get('n', None))
 
     # Rebuild HMAC input
     hmac_input = [request_header['n'], '+'] if using_nonce else ['+']
@@ -720,7 +716,6 @@ def validate_request(request, request_header):
     hmac_input = '|'.join(hmac_input)
 
     # Perform HMAC validation
-    import ipdb; ipdb.set_trace()
     our_mac = server_hmac(request_header['h'], hmac_key, hmac_input)
     hmac_valid = hmac.compare_digest(our_mac, request_header['c'])
 
@@ -783,7 +778,7 @@ def validate_request(request, request_header):
 def validate_session_expiry(request, request_header):
     try:
         _, _, expiration_time = decrypt_opaque(
-            request_header['s'], request_header['ctr'], request_header['sm'])
+            request_header['s'], request_header['ctr'], request_header['cm'])
     except ValueError:
         raise InvalidSessionKey # Django handles this
 
