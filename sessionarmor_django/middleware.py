@@ -93,257 +93,200 @@ DEFAULT_AUTH_HEADERS = [
 ]
 
 ALL_AUTH_HEADERS = [
-    'Host',
-    'User-Agent',
-    'Accept',
-    'Connection',
-    'Accept-Encoding',
-    'Accept-Language',
-    'Referer',
-    'Cookie',
-    'Accept-Charset',
-    'If-Modified-Since',
-    'If-None-Match',
-    'Range',
-    'Date',
-    'Authorization',
-    'Cache-Control',
-    'Origin',
-    'Pragma',
-    'DNT',
-    'X-Csrf-Token',
-    'Sec-WebSocket-Version',
-    'Sec-WebSocket-Protocol',
-    'Sec-WebSocket-Key',
-    'Sec-WebSocket-Extensions',
-    'TE',
-    'X-Requested-With',
-    'X-Forwarded-For',
-    'X-Forwarded-Proto',
-    'Forwarded',
-    'From',
-    'HTTP2-Settings',
-    'Upgrade',
-    'Proxy-Authorization',
-    'If',
-    'If-Match',
-    'If-Range',
-    'If-Unmodified-Since',
-    'Max-Forwards',
-    'Prefer',
-    'Via',
-    'ALPN',
-    'Expect',
-    'Alt-Used',
-    'CalDAV-Timezones',
-    'Schedule-Reply',
-    'If-Schedule-Tag-Match',
-    'Destination',
-    'Lock-Token',
-    'Timeout',
-    'Ordering-Type',
-    'Overwrite',
-    'Position',
-    'Depth',
-    'SLUG',
-    'Trailer',
-    'MIME-Version'
-]
-
-# TODO: generate this dynamically using dict comprehension and move
-# descriptions above
-AUTH_HEADER_MASKS = {
     # Hostname to which the client is sending the request
-    'Host': (1 << 0),
+    'Host',
 
     # String indicating the software and/or hardware platform used to generate
     # the request
-    'User-Agent': (1 << 1),
+    'User-Agent',
 
     # Types of media that the client would accept in a response
-    'Accept': (1 << 2),
+    'Accept',
 
     # Desired behavior of the connection with the first remote machine
-    'Connection': (1 << 3),
+    'Connection',
 
     # Character encodings that the client would accept in a response
-    'Accept-Encoding': (1 << 4),
+    'Accept-Encoding',
 
     # Human languages that the client would accept in a response
-    'Accept-Language': (1 << 5),
+    'Accept-Language',
 
     # URI that caused or enabled the client to make the request
-    'Referer': (1 << 6),
+    'Referer',
 
     # Persistent general-purpose tokens that the client provides to the server
-    'Cookie': (1 << 7),
+    'Cookie',
 
     # Character sets that the client would accept in a response
-    'Accept-Charset': (1 << 8),
+    'Accept-Charset',
 
     # The last modified time known by the client, response requested if
     # modified
-    'If-Modified-Since': (1 << 9),
+    'If-Modified-Since',
 
     # An entity tag. A response is requested if the entity does not match.
-    'If-None-Match': (1 << 10),
+    'If-None-Match',
 
     # Specifies a portion of the resource being requested
-    'Range': (1 << 11),
+    'Range',
 
     # Time at which a request was sent that includes body data
-    'Date': (1 << 12),
+    'Date',
 
     # Authentication credentials provided by the client for Basic or Digest
     # HTTP Authentication
-    'Authorization': (1 << 13),
+    'Authorization',
 
     # An indication of how the request should be treated by caching proxies
-    'Cache-Control': (1 << 14),
+    'Cache-Control',
 
     # A list of origins that caused the request, e.g. used by a client script
     # that has established allowable cross-origin methods via CORS
-    'Origin': (1 << 15),
+    'Origin',
 
     # General-purpose header field, most often used with "no-cache" to request
     # a non-cached version of a resource
-    'Pragma': (1 << 16),
+    'Pragma',
 
     # Boolean indicating that the user wishes not to be tracked by the server
-    'DNT': (1 << 17),
+    'DNT',
 
     # Nonce sent by the server to be used for Cross Site Request Forgery
     # protection
-    'X-Csrf-Token': (1 << 18),
+    'X-Csrf-Token',
 
     # Version of the WebSocket protocol being used
-    'Sec-WebSocket-Version': (1 << 19),
+    'Sec-WebSocket-Version',
 
     # Used with websocket handshake to indicate what application level
     # protocols the client wishes to use
-    'Sec-WebSocket-Protocol': (1 << 20),
+    'Sec-WebSocket-Protocol',
 
     # Randomly generated nonce used during the Websocket handshake
-    'Sec-WebSocket-Key': (1 << 21),
+    'Sec-WebSocket-Key',
 
     # A list of registered websocket extended features that the client wishes
     # to use with a websocket connection
-    'Sec-WebSocket-Extensions': (1 << 22),
+    'Sec-WebSocket-Extensions',
 
     # Transfer Encodings that the user agent will accept, e.g. "deflate". Can
     # also specify that "trailers" should be used for chunked transfers
-    'TE': (1 << 23),
+    'TE',
 
     # Mechanism used to make the request, e.g. XMLHttpRequest
-    'X-Requested-With': (1 << 24),
+    'X-Requested-With',
 
     # IP addres or hostname that originated the request (after travelling
     # through a proxy)
-    'X-Forwarded-For': (1 << 25),
+    'X-Forwarded-For',
 
     # The original protocol used when the request was made, e.g. "https" (after
     # travelling through a proxy
-    'X-Forwarded-Proto': (1 << 26),
+    'X-Forwarded-Proto',
 
     # Used by a proxy server to include information that would otherwise be
     # lost at lower levels in the protocol stack
-    'Forwarded': (1 << 27),
+    'Forwarded',
 
     # The email address of the user making the request, most often used by
     # robots as contact information for the robot administrator
-    'From': (1 << 28),
+    'From',
 
     # Settings for protocol-upgrade with an HTTP/2 capable host
-    'HTTP2-Settings': (1 << 29),
+    'HTTP2-Settings',
 
     # Another protocol, to which the agent wishes to switch, e.g. HTTP/2.0
-    'Upgrade': (1 << 30),
+    'Upgrade',
 
     # Credentials request by a proxy in the request chain. Consumed by the
     # first proxy requesting authentication.
-    'Proxy-Authorization': (1 << 31),
+    'Proxy-Authorization',
 
     # List of conditions for a resource to meet for a response to be requested
-    'If': (1 << 32),
+    'If',
 
     # An entity tag that must match the resource for a response to be requested
-    'If-Match': (1 << 33),
+    'If-Match',
 
     # Combination of If-Match and If-Unmodified-Since for a range request
-    'If-Range': (1 << 34),
+    'If-Range',
 
     # A timestamp. A response is requested if the entity has not been modified
     # since this time.
-    'If-Unmodified-Since': (1 << 35),
+    'If-Unmodified-Since',
 
     # An integer. Used with TRACE or OPTIONS requests to limit forwarding by
     # proxies
-    'Max-Forwards': (1 << 36),
+    'Max-Forwards',
 
     # Preferences requested of the server, examples include: asynchronous
     # response, relative priority, response verbosity
-    'Prefer': (1 << 37),
+    'Prefer',
 
     # A list of proxies through which the request was sent
-    'Via': (1 << 38),
+    'Via',
 
     # Protocol stack that that the client would like to tunnel via HTTP
-    'ALPN': (1 << 39),
+    'ALPN',
 
     # Expected response from the server, usually HTTP 100 (Continue). In this
     # case the client wishes to know if a request body is acceptable before
     # sending it to the server.
-    'Expect': (1 << 40),
+    'Expect',
 
     # Alternative host that the client selected for a request
-    'Alt-Used': (1 << 41),
+    'Alt-Used',
 
     # Client indicating whether or not it would like timezones on calendars
-    'CalDAV-Timezones': (1 << 42),
+    'CalDAV-Timezones',
 
     # A boolean, indicates if a client will attend a CalDAV calendar event
-    'Schedule-Reply': (1 << 43),
+    'Schedule-Reply',
 
     # A CalDAV opaque token for a calendar schedule. A response is requested
     # if the resource matches the schedule
-    'If-Schedule-Tag-Match': (1 << 44),
+    'If-Schedule-Tag-Match',
 
     # COPY or MOVE request destination for a WebDAV request
-    'Destination': (1 << 45),
+    'Destination',
 
     # A URL to a lock. Used with the UNLOCK method to remove the lock.
-    'Lock-Token': (1 << 46),
+    'Lock-Token',
 
     # Number of seconds for which a WebDAV LOCK should be active
-    'Timeout': (1 << 47),
+    'Timeout',
 
     # A WebDAV URI, indicates the request order of the requested collection.
-    'Ordering-Type': (1 << 48),
+    'Ordering-Type',
 
     # A boolean indicating if a WebDAV resource should be overwritten due to
     # the request
-    'Overwrite': (1 << 49),
+    'Overwrite',
 
     # A string indicating the desired position at which to insert a resource in
     # a WebDAV request
-    'Position': (1 << 50),
+    'Position',
 
     # Tree or graph depth of the resource on which the request should act.
     # (used by WebDAV)
-    'Depth': (1 << 51),
+    'Depth',
 
     # Arbitrary text, when present with a POST request, indicates to the server
     # a desired description for the content to be used in URIs
-    'SLUG': (1 << 52),
+    'SLUG',
 
     # Set of header fields that will be included with the trailer of a
     # message sent using a chunked transfer encoding
-    'Trailer': (1 << 53),
+    'Trailer',
 
     # The Multipurpose Internet Mail Extensions version used when constructing
     # the components of the message. Optional.
-    'MIME-Version': (1 << 54)
-}
+    'MIME-Version'
+]
+
+AUTH_HEADER_MASKS = {name: (1 << i) for (i, name)
+                     in enumerate(ALL_AUTH_HEADERS)}
 
 noncecache = caches['sessionarmor']
 
