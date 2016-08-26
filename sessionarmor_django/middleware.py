@@ -606,6 +606,47 @@ def server_hmac(algo_mask, key, string):
     return mac.digest()
 
 
+def validate_nonce(request_nonce, sessionid):
+    request_nonce = bytes_to_int(request_nonce)
+    nonce_tup = noncecache.get(sessionid)
+    if nonce_tup:
+        latest_nonce, reciept_vector = nonce_tup
+    else:
+        latest_nonce, reciept_vector = (request_nonce - 1,
+                                        INITIAL_RECIEPT_VECTOR)
+
+    if request_nonce == latest_nonce:
+        message = "Request nonce has been seen before"
+        LOGGER.debug(message)
+        raise PermissionDenied(message)
+
+    delta = latest_nonce - request_nonce
+
+    if delta < 0:
+        # This a "future" nonce
+        latest_nonce = request_nonce
+        # Shift our current vector to the left
+        reciept_vector <<= -delta
+        # And indicate that this new nonce has been seen
+        reciept_vector |= 0x01
+    elif delta > 0 and delta < RECIEPT_VECTOR_BITS:
+        # This is a "past" nonce that we have the ability to check
+        if reciept_vector & (1 << delta):
+            message = "Request nonce has been seen before"
+            LOGGER.debug(message)
+            raise PermissionDenied(message)
+        else:
+            # Set the bit in the bit vector
+            reciept_vector |= 1 << delta
+    elif delta > 0 and delta >= RECIEPT_VECTOR_BITS:
+        message = "Nonce is too old to validate"
+        LOGGER.debug(message)
+        raise PermissionDenied(message)
+
+    reciept_vector &= INITIAL_RECIEPT_VECTOR
+    noncecache.set(sessionid, (latest_nonce, reciept_vector), None)
+
+
 def validate_request(request, request_header):
     try:
         sessionid, hmac_key, expiration_time = decrypt_opaque(
@@ -623,9 +664,8 @@ def validate_request(request, request_header):
     # HMAC validation
     # Performs time-based and nonce-based replay prevention if present
 
-    using_nonce = bool(request_header.get('n', None))
-
     # Rebuild HMAC input
+    using_nonce = bool(request_header.get('n', None))
     hmac_input = [request_header['n'], '+'] if using_nonce else ['+']
     hmac_input.append(request_header['t'])
     extra_headers = request_header.get('eah', None)
@@ -655,44 +695,7 @@ def validate_request(request, request_header):
 
     # Validate that nonce has not been used before (absolute replay prevention)
     if using_nonce:
-        request_nonce = bytes_to_int(request_header['n'])
-        nonce_tup = noncecache.get(sessionid)
-        if nonce_tup:
-            latest_nonce, reciept_vector = nonce_tup
-        else:
-            latest_nonce, reciept_vector = (request_nonce - 1,
-                                            INITIAL_RECIEPT_VECTOR)
-
-        if request_nonce == latest_nonce:
-            message = "Request nonce has been seen before"
-            LOGGER.debug(message)
-            raise PermissionDenied(message)
-
-        delta = latest_nonce - request_nonce
-
-        if delta < 0:
-            # This a "future" nonce
-            latest_nonce = request_nonce
-            # Shift our current vector to the left
-            reciept_vector <<= -delta
-            # And indicate that this new nonce has been seen
-            reciept_vector |= 0x01
-        elif delta > 0 and delta < RECIEPT_VECTOR_BITS:
-            # This is a "past" nonce that we have the ability to check
-            if reciept_vector & (1 << delta):
-                message = "Request nonce has been seen before"
-                LOGGER.debug(message)
-                raise PermissionDenied(message)
-            else:
-                # Set the bit in the bit vector
-                reciept_vector |= 1 << delta
-        elif delta > 0 and delta >= RECIEPT_VECTOR_BITS:
-            message = "Nonce is too old to validate"
-            LOGGER.debug(message)
-            raise PermissionDenied(message)
-
-        reciept_vector &= INITIAL_RECIEPT_VECTOR
-        noncecache.set(sessionid, (latest_nonce, reciept_vector), None)
+        validate_nonce(request_header['n'], sessionid)
 
     return sessionid
 
