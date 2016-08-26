@@ -692,24 +692,6 @@ def validate_request(request, request_header):
     hmac_input += auth_header_values(request, request_header['ah'],
                                      extra_headers)
     hmac_input.append(request.path)
-    # Body authentication requires patching Chromium as follows
-    # (as of 2016-08-24)
-    # diff --git
-    #   a/extensions/browser/api/web_request/web_request_event_details.cc
-    #   b/extensions/browser/api/web_request/web_request_event_details.cc
-    # index a9f2f83..835b0eb5 100644
-    # --- a/extensions/browser/api/web_request/web_request_event_details.cc
-    # +++ b/extensions/browser/api/web_request/web_request_event_details.cc
-    # @@ -84,7 +84,6
-    # @@ void WebRequestEventDetails::SetRequestBody(
-    #            const net::URLRequest* request) {
-    #        if (presenters[i]->Succeeded()) {
-    #          request_body->Set(kKeys[i], presenters[i]->Result());
-    #          some_succeeded = true;
-    # -        break;
-    #        }
-    #      }
-    #    }
     hmac_input.append(request.body or '')
     # unicode objects to bytestring for ordinals greater than 128
     hmac_input = [x.decode('latin1').encode('latin1') for x in hmac_input]
