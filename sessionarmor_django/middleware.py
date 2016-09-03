@@ -7,7 +7,8 @@ This software is licensed under AGPLv3 open source license. See LICENSE.txt
 
 Example configuration variables:
 S_ARMOR_STRICT = True
-S_ARMOR_SESSION_MINUTES = 5
+S_ARMOR_SESSION_SECONDS = 5
+S_ARMOR_REQUEST_SECONDS = 5
 S_ARMOR_AUTH_HEADERS = [
     'Host',
     'User-Agent',
@@ -42,9 +43,9 @@ S_ARMOR_EXTRA_AUTHENTICATED_HEADERS = [
 import base64
 import hashlib
 import hmac
+import json
 import logging
 import time
-import json
 from datetime import datetime, timedelta
 
 from Crypto import Random
@@ -52,9 +53,9 @@ from Crypto.Cipher import AES
 from Crypto.Random import random as crypt_random
 from Crypto.Util import Counter
 from django.conf import settings
+from django.contrib.sessions.exceptions import InvalidSessionKey
 from django.core.cache import caches
 from django.core.exceptions import PermissionDenied
-from django.contrib.sessions.exceptions import InvalidSessionKey
 
 COUNTER_BITS = 128
 RECIEPT_VECTOR_BITS = 64
@@ -71,9 +72,10 @@ HASH_ALGO_MASKS = (
     (1 << 3, lambda: hashlib.new('ripemd160')),
 )
 
-LOGGER = logging.getLogger(__name__)
-
 SECONDS_14_DAYS = 1209600
+SECONDS_5_MINUTES = 300
+
+LOGGER = logging.getLogger(__name__)
 
 assert len(settings.SECRET_KEY) >= AES.block_size, \
     "Django settings.SECRET_KEY must be at least {} bytes".format(
@@ -286,17 +288,48 @@ ALL_AUTH_HEADERS = [
 AUTH_HEADER_MASKS = {name: (1 << i) for (i, name)
                      in enumerate(ALL_AUTH_HEADERS)}
 
-noncecache = caches['sessionarmor']
+NONCECACHE = caches['sessionarmor']
 
 
 class SessionExpired(Exception):
-    '''The session has expired''' 
-    pass
+    def __init__(self, message="The session has expired"):
+        self.message = message
+
+    def __str__(self):
+        return self.message
 
 
 class HmacInvalid(Exception):
-    '''The HMAC did not validate''' 
-    pass
+    def __init__(self, message="The client's HMAC did not validate");
+        self.message = message
+
+    def __str__(self):
+        return self.message
+
+
+class OpaqueInvalid(Exception):
+    def __init__(self, message=
+            "The server's opaque token from the client was not valid")
+        self.message = message
+
+    def __str__(self):
+        return self.message
+
+
+class RequestExpired(Exception):
+    def __init__(self, message="The request has expired")
+        self.message = message
+
+    def __str__(self):
+        return self.message
+
+
+class NonceInvalid(Exception):
+    def __init__(self, message="The replay-prevention nonce was invalid")
+        self.message = message
+
+    def __str__(self):
+        return self.message
 
 
 def gen_header_mask(auth_headers):
@@ -436,11 +469,11 @@ def select_hash_module(packed_hash_mask):
     for bitmask in HASH_ALGO_MASKS:
         if bitmask[0] & hash_mask:
             return bitmask[1]
-    raise NotImplementedError(
+    raise HmacInvalid(
         'HMAC algorithm bitmask did not match any hash implementations.')
 
 
-def select_hash_mask(header):
+def select_hash_mask(packed_hash_mask):
     '''
     Given a header dictionary, select a hash function supported by the client.
 
@@ -452,12 +485,12 @@ def select_hash_mask(header):
     4. Return the bitmask for the selected hash module
     '''
     # base64 decode the value of the ready key into a byte string
-    hash_mask = unpack_mask(header['r'])
+    hash_mask = unpack_mask(packed_hash_mask)
     # store the bit vector as an integer
     for bitmask in HASH_ALGO_MASKS:
         if bitmask[0] & hash_mask:
             return pack_mask(bitmask[0])
-    raise NotImplementedError(
+    raise HmacInvalid(
         'Client ready header bitmask did not match any hash implementations.')
 
 
@@ -483,9 +516,9 @@ def get_expiration_second():
     """
     Get expiration time for a new Session Armor session as seconds since epoch
     """
-    #duration_seconds = 0
-    duration_seconds = get_setting('S_ARMOR_SESSION_SECONDS', SECONDS_14_DAYS)
-    return str(int(time.time() + duration_seconds))
+    session_duration_seconds = get_setting(
+        'S_ARMOR_SESSION_SECONDS', SECONDS_14_DAYS)
+    return str(int(time.time() + session_duration_seconds))
 
 
 def generate_hmac_key():
@@ -502,17 +535,18 @@ def encrypt_opaque(sessionid, hmac_key, expiration_time):
     plaintext = '|'.join((sessionid, hmac_key, expiration_time))
     LOGGER.debug("plaintext %s", plaintext)
     ciphertext = cipher.encrypt(plaintext)
-    # Encrypt then MAC
+    # Encrypt then MAC (EtM) provices integrity for the ciphertext and prevents
+    # oracle attacks
     mac = hmac.new(SECRET_KEY, ciphertext, hashlib.sha256)
     ciphermac = mac.digest()
     return int_to_bytes(ctr_init), ciphermac, ciphertext
 
 
 def decrypt_opaque(opaque, ctr_init, ciphermac):
-    # MAC then Decrypt
+    # MAC then Decrypt (MtD)
     mac = hmac.new(SECRET_KEY, opaque, hashlib.sha256)
     if not hmac.compare_digest(mac.digest(), ciphermac):
-        raise ValueError
+        raise OpaqueInvalid()
 
     ctr_init = bytes_to_int(ctr_init)
     counter = Counter.new(COUNTER_BITS, initial_value=ctr_init)
@@ -522,7 +556,7 @@ def decrypt_opaque(opaque, ctr_init, ciphermac):
     try:
         sessionid, hmac_key, expiration_time = plaintext.split('|')
     except ValueError:
-        raise
+        raise OpaqueInvalid()
 
     return sessionid, hmac_key, int(expiration_time)
 
@@ -545,7 +579,7 @@ def begin_session(header, sessionid, packed_header_mask):
         sessionid, hmac_key, expiration_time)
     LOGGER.debug("counter_init %s, ciphermac %s, opaque %s",
             counter_init, ciphermac, opaque)
-    packed_hash_mask = select_hash_mask(header)
+    packed_hash_mask = select_hash_mask(header['r'])
 
     kvs = [
         ('s', opaque),
@@ -608,7 +642,7 @@ def server_hmac(algo_mask, key, string):
 
 def validate_nonce(request_nonce, sessionid):
     request_nonce = bytes_to_int(request_nonce)
-    nonce_tup = noncecache.get(sessionid)
+    nonce_tup = NONCECACHE.get(sessionid)
     if nonce_tup:
         latest_nonce, reciept_vector = nonce_tup
     else:
@@ -617,8 +651,7 @@ def validate_nonce(request_nonce, sessionid):
 
     if request_nonce == latest_nonce:
         message = "Request nonce has been seen before"
-        LOGGER.debug(message)
-        raise PermissionDenied(message)
+        raise NonceInvalid(message)
 
     delta = latest_nonce - request_nonce
 
@@ -627,39 +660,36 @@ def validate_nonce(request_nonce, sessionid):
         latest_nonce = request_nonce
         # Shift our current vector to the left
         reciept_vector <<= -delta
-        # And indicate that this new nonce has been seen
+        # And set that this new nonce has been seen
         reciept_vector |= 0x01
     elif delta > 0 and delta < RECIEPT_VECTOR_BITS:
         # This is a "past" nonce that we have the ability to check
         if reciept_vector & (1 << delta):
             message = "Request nonce has been seen before"
-            LOGGER.debug(message)
-            raise PermissionDenied(message)
+            raise NonceInvalid(message)
         else:
             # Set the bit in the bit vector
             reciept_vector |= 1 << delta
     elif delta > 0 and delta >= RECIEPT_VECTOR_BITS:
+        # This is "past" nonce that we don't have the ability to check
         message = "Nonce is too old to validate"
-        LOGGER.debug(message)
-        raise PermissionDenied(message)
+        raise NonceInvalid(message)
 
+    # Clamp to RECIEPT_VECTOR_BITS because Python will gladly shift to bigint
     reciept_vector &= INITIAL_RECIEPT_VECTOR
-    noncecache.set(sessionid, (latest_nonce, reciept_vector), None)
+    NONCECACHE.set(sessionid, (latest_nonce, reciept_vector), None)
 
 
 def validate_request(request, request_header):
-    try:
-        sessionid, hmac_key, expiration_time = decrypt_opaque(
-            request_header['s'], request_header['ctr'], request_header['cm'])
-    except ValueError:
-        raise InvalidSessionKey # Django handles this
+    sessionid, hmac_key, expiration_time = decrypt_opaque(
+        request_header['s'], request_header['ctr'], request_header['cm'])
 
     LOGGER.debug("request data %s %s %s",
                  sessionid, hmac_key.decode('latin1'), expiration_time)
 
     # Session expiration check
     if expiration_time <= int(time.time()):
-        raise SessionExpired
+        raise SessionExpired()
 
     # HMAC validation
     # Performs time-based and nonce-based replay prevention if present
@@ -683,15 +713,14 @@ def validate_request(request, request_header):
     hmac_valid = hmac.compare_digest(our_mac, request_header['c'])
 
     if not hmac_valid:
-        message = "Invalid client HMAC"
-        LOGGER.debug(message)
-        raise PermissionDenied(message)
+        raise HmacInvalid()
 
     # Validate that the request has not expired (time-based replay prevention)
-    if time.time() >= int(request_header['t']):
-        message = "Request has expired"
-        LOGGER.debug(message)
-        raise PermissionDenied(message)
+    # NB: This is done after HMAC validation
+    request_duration_seconds = get_setting(
+        'S_ARMOR_REQUEST_SECONDS', SECONDS_5_MINUTES)
+    if time.time() - int(request_header['t']) >= request_duration_seconds:
+        raise RequestExpired()
 
     # Validate that nonce has not been used before (absolute replay prevention)
     if using_nonce:
@@ -701,23 +730,16 @@ def validate_request(request, request_header):
 
 
 def validate_session_expiry(request, request_header):
-    try:
-        _, _, expiration_time = decrypt_opaque(
-            request_header['s'], request_header['ctr'], request_header['cm'])
-    except ValueError:
-        raise InvalidSessionKey # Django handles this
-
+    _, _, expiration_time = decrypt_opaque(
+        request_header['s'], request_header['ctr'], request_header['cm'])
     # Session expiration check
     if expiration_time <= int(time.time()):
-        raise SessionExpired
+        raise SessionExpired()
 
 
 def invalidate_session(request_header):
-    try:
-        _, hmac_key, _ = decrypt_opaque(
-            request_header['s'], request_header['ctr'], request_header['cm'])
-    except ValueError:
-        return ''
+    _, hmac_key, _ = decrypt_opaque(
+        request_header['s'], request_header['ctr'], request_header['cm'])
     mac = server_hmac(request_header['h'], hmac_key, 'Session Expired')
     return tuples_to_header((('i', mac),))
 
@@ -756,7 +778,9 @@ class SessionArmorMiddleware(object):
             # action. Any of the exception handlers called in the lifecycle of
             # Django's BaseHandler could allow this to happen, including the
             # handle_exception of another middleware.
-
+            #
+            # NB: This applies to all PermissionDenied exceptions called from
+            # the context of this middleware.
             raise PermissionDenied('Client does not support Session Armor')
 
         request_header = header_to_dict(header_str)
@@ -766,10 +790,28 @@ class SessionArmorMiddleware(object):
         if state == CLIENT_SIGNED_REQUEST:
             try:
                 sessionid = validate_request(request, request_header)
-            except SessionExpired:
+            except SessionExpired as e:
+                LOGGER.debug(str(e))
+                # Return before injeting the session cookie. The request will
+                # be processed without a user object. This allows session
+                # invalidation to proceed in process_response.
                 return
-            except HmacInvalid:
-                return
+            except OpaqueInvalid as e:
+                # Client provided an invalid symmetrically encrypted token
+                LOGGER.debug(str(e))
+                raise PermissionDenied(str(e))
+            except HmacInvalid, as e:
+                # Client's HMAC did not validate
+                LOGGER.debug(str(e))
+                raise PermissionDenied(str(e))
+            except RequestExpired as e:
+                # Time-based replay prevention
+                LOGGER.debug(str(e))
+                raise PermissionDenied(str(e))
+            except NonceInvalid as e:
+                # Counter-based replay prevention
+                LOGGER.debug(str(e))
+                raise PermissionDenied(str(e))
 
         if sessionid:
             request.COOKIES[settings.SESSION_COOKIE_NAME] = sessionid
@@ -792,31 +834,27 @@ class SessionArmorMiddleware(object):
         request_header = header_to_dict(header_str)
         state = get_client_state(request_header)
 
-        response_header = ''
         if state == CLIENT_READY and request.is_secure() and sessionid:
             LOGGER.debug("Creating new SessionArmor session from ID %s",
                          sessionid)
-            response_header = begin_session(request_header, sessionid,
-                                            self.packed_header_mask)
+            response['X-S-Armor'] = begin_session(request_header, sessionid,
+                                                  self.packed_header_mask)
         elif state == CLIENT_SIGNED_REQUEST:
-            # Session invalidation conditions
-
-            # Check if the session has expired
+            # Session invalidation
             try:
-                validate_session_expiry(request, request_header)
-            except SessionExpired:
-                response_header = invalidate_session(request_header)
+                # Check if the session has expired
+                try:
+                    validate_session_expiry(request, request_header)
+                except SessionExpired:
+                    response['X-S-Armor'] = invalidate_session(request_header)
+                # Check if the server is deleting the session, e.g. a logout
+                # view has executed.
+                if sessionid == '':
+                    response['X-S-Armor'] = invalidate_session(request_header)
+            except OpaqueInvalid:
+                # Can't raise PermissionDenied; it won't be caught by Django.
+                # We have already risen it above if the opaque is invalid.
+                return response
 
-            # Check if the server is deleting the session
-            if sessionid == '':
-                response_header = invalidate_session(request_header)
-
-        response['X-S-Armor'] = response_header
         return response
 
-    @staticmethod
-    def do_nothing():
-        '''
-        Do absolutely nothing
-        '''
-        pass
