@@ -300,7 +300,7 @@ class SessionExpired(Exception):
 
 
 class HmacInvalid(Exception):
-    def __init__(self, message="The client's HMAC did not validate");
+    def __init__(self, message="The client's HMAC did not validate"):
         self.message = message
 
     def __str__(self):
@@ -309,7 +309,7 @@ class HmacInvalid(Exception):
 
 class OpaqueInvalid(Exception):
     def __init__(self, message=
-            "The server's opaque token from the client was not valid")
+            "The opaque token from the client was not valid"):
         self.message = message
 
     def __str__(self):
@@ -317,7 +317,7 @@ class OpaqueInvalid(Exception):
 
 
 class RequestExpired(Exception):
-    def __init__(self, message="The request has expired")
+    def __init__(self, message="The request has expired"):
         self.message = message
 
     def __str__(self):
@@ -325,7 +325,7 @@ class RequestExpired(Exception):
 
 
 class NonceInvalid(Exception):
-    def __init__(self, message="The replay-prevention nonce was invalid")
+    def __init__(self, message="The replay-prevention nonce was invalid"):
         self.message = message
 
     def __str__(self):
@@ -378,7 +378,6 @@ def tuples_to_header(tuples, outer_sep=';', inner_sep=':'):
     for the Session Armor header value
     """
     encoded_tuples = [(tup[0], base64.b64encode(tup[1])) for tup in tuples]
-    LOGGER.debug(encoded_tuples)
     return outer_sep.join([inner_sep.join(tup) for tup in encoded_tuples])
 
 
@@ -533,7 +532,6 @@ def encrypt_opaque(sessionid, hmac_key, expiration_time):
     counter = Counter.new(COUNTER_BITS, initial_value=ctr_init)
     cipher = AES.new(SECRET_KEY, AES.MODE_CTR, counter=counter)
     plaintext = '|'.join((sessionid, hmac_key, expiration_time))
-    LOGGER.debug("plaintext %s", plaintext)
     ciphertext = cipher.encrypt(plaintext)
     # Encrypt then MAC (EtM) provices integrity for the ciphertext and prevents
     # oracle attacks
@@ -546,7 +544,8 @@ def decrypt_opaque(opaque, ctr_init, ciphermac):
     # MAC then Decrypt (MtD)
     mac = hmac.new(SECRET_KEY, opaque, hashlib.sha256)
     if not hmac.compare_digest(mac.digest(), ciphermac):
-        raise OpaqueInvalid()
+        raise OpaqueInvalid(
+            "Opaque token from the client failed to authenticate")
 
     ctr_init = bytes_to_int(ctr_init)
     counter = Counter.new(COUNTER_BITS, initial_value=ctr_init)
@@ -554,9 +553,12 @@ def decrypt_opaque(opaque, ctr_init, ciphermac):
     plaintext = cipher.decrypt(opaque)
 
     try:
-        sessionid, hmac_key, expiration_time = plaintext.split('|')
+        sessionid, remainder = plaintext.split('|', 1)
+        hmac_key, expiration_time = (remainder[:AES.block_size],
+                                     remainder[AES.block_size + 1:])
     except ValueError:
-        raise OpaqueInvalid()
+        raise OpaqueInvalid(
+            "Plaintext from opaque token didn't have required fields")
 
     return sessionid, hmac_key, int(expiration_time)
 
@@ -577,8 +579,6 @@ def begin_session(header, sessionid, packed_header_mask):
     expiration_time = get_expiration_second()
     counter_init, ciphermac, opaque = encrypt_opaque(
         sessionid, hmac_key, expiration_time)
-    LOGGER.debug("counter_init %s, ciphermac %s, opaque %s",
-            counter_init, ciphermac, opaque)
     packed_hash_mask = select_hash_mask(header['r'])
 
     kvs = [
@@ -683,9 +683,6 @@ def validate_nonce(request_nonce, sessionid):
 def validate_request(request, request_header):
     sessionid, hmac_key, expiration_time = decrypt_opaque(
         request_header['s'], request_header['ctr'], request_header['cm'])
-
-    LOGGER.debug("request data %s %s %s",
-                 sessionid, hmac_key.decode('latin1'), expiration_time)
 
     # Session expiration check
     if expiration_time <= int(time.time()):
@@ -800,7 +797,7 @@ class SessionArmorMiddleware(object):
                 # Client provided an invalid symmetrically encrypted token
                 LOGGER.debug(str(e))
                 raise PermissionDenied(str(e))
-            except HmacInvalid, as e:
+            except HmacInvalid as e:
                 # Client's HMAC did not validate
                 LOGGER.debug(str(e))
                 raise PermissionDenied(str(e))
@@ -835,8 +832,6 @@ class SessionArmorMiddleware(object):
         state = get_client_state(request_header)
 
         if state == CLIENT_READY and request.is_secure() and sessionid:
-            LOGGER.debug("Creating new SessionArmor session from ID %s",
-                         sessionid)
             response['X-S-Armor'] = begin_session(request_header, sessionid,
                                                   self.packed_header_mask)
         elif state == CLIENT_SIGNED_REQUEST:
