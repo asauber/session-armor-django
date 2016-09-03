@@ -7,8 +7,10 @@ This software is licensed under AGPLv3 open source license. See LICENSE.txt
 
 Example configuration variables:
 S_ARMOR_STRICT = True
-S_ARMOR_SESSION_SECONDS = 5
-S_ARMOR_REQUEST_SECONDS = 5
+# 14 days
+S_ARMOR_SESSION_SECONDS = 1209600
+# 5 minutes
+S_ARMOR_REQUEST_SECONDS = 300
 S_ARMOR_AUTH_HEADERS = [
     'Host',
     'User-Agent',
@@ -852,4 +854,3 @@ class SessionArmorMiddleware(object):
                 return response
 
         return response
-
