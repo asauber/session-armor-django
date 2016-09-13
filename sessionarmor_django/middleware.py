@@ -8,9 +8,11 @@ This software is licensed under AGPLv3 open source license. See LICENSE.txt
 Example configuration variables:
 S_ARMOR_STRICT = True
 # 14 days
-S_ARMOR_SESSION_SECONDS = 1209600
+S_ARMOR_SESSION_VALID_SECONDS = 1209600
 # 5 minutes
-S_ARMOR_REQUEST_SECONDS = 300
+S_ARMOR_REQUEST_VALID_SECONDS = 300
+# 30 minutes
+S_ARMOR_INACTIVITY_TIMEOUT_SECONDS = 1800
 S_ARMOR_AUTH_HEADERS = [
     'Host',
     'User-Agent',
@@ -76,6 +78,7 @@ HASH_ALGO_MASKS = (
 
 SECONDS_14_DAYS = 1209600
 SECONDS_5_MINUTES = 300
+SECONDS_30_MINUTES = 1800
 
 LOGGER = logging.getLogger(__name__)
 
@@ -392,11 +395,11 @@ def validate_ready_header(header):
 
 def validate_signed_request(header):
     # minimal set of values needed for a signed request
-    valid = (header.get('s'))
-             #and header.get('c')
-             #and header.get('T_re')
-             #and header.get('h')
-             #and header.get('ah'))
+    valid = (header.get('s')
+             and header.get('c')
+             and header.get('t')
+             and header.get('h')
+             and header.get('ah'))
     return valid
 
 
@@ -518,7 +521,7 @@ def get_expiration_second():
     Get expiration time for a new Session Armor session as seconds since epoch
     """
     session_duration_seconds = get_setting(
-        'S_ARMOR_SESSION_SECONDS', SECONDS_14_DAYS)
+        'S_ARMOR_SESSION_VALID_SECONDS', SECONDS_14_DAYS)
     return str(int(time.time() + session_duration_seconds))
 
 
@@ -574,10 +577,6 @@ def begin_session(header, sessionid, packed_header_mask):
     # Create opaque token
     # Components: Session ID, HMAC Key, Expiration Time
     hmac_key = generate_hmac_key()
-    # TODO: Take the expiration time from the session cookie?
-    # TODO: Extend based on activity? Think about a hard and fast 5 minute
-    #       expiration time. It's likely for the session to expire after a
-    #       legitimate request while the user is still active.
     expiration_time = get_expiration_second()
     counter_init, ciphermac, opaque = encrypt_opaque(
         sessionid, hmac_key, expiration_time)
@@ -688,7 +687,7 @@ def validate_request(request, request_header):
 
     # Session expiration check
     if expiration_time <= int(time.time()):
-        raise SessionExpired()
+        raise SessionExpired('Session expired due to absolute expiration time')
 
     # HMAC validation
     # Performs time-based and nonce-based replay prevention if present
@@ -697,27 +696,41 @@ def validate_request(request, request_header):
     using_nonce = bool(request_header.get('n', None))
     hmac_input = [request_header['n'], '+'] if using_nonce else ['+']
     hmac_input.append(request_header['t'])
+    hmac_input.append(request_header['lt'])
     extra_headers = request_header.get('eah', None)
     extra_headers = extra_headers.split(',') if extra_headers else []
     hmac_input += auth_header_values(request, request_header['ah'],
                                      extra_headers)
-    hmac_input.append(request.path)
+    hmac_input.append(request.get_full_path())
     hmac_input.append(request.body or '')
     # unicode objects to bytestring for ordinals greater than 128
     hmac_input = [x.decode('latin1').encode('latin1') for x in hmac_input]
     hmac_input = '|'.join(hmac_input)
 
     # Perform HMAC validation
+    import ipdb; ipdb.set_trace()
     our_mac = server_hmac(request_header['h'], hmac_key, hmac_input)
     hmac_valid = hmac.compare_digest(our_mac, request_header['c'])
 
     if not hmac_valid:
         raise HmacInvalid()
 
+    # If the request is valid, but too much time has elapsed since the prior
+    # request, expire the session. Note that it's fine to do this before replay
+    # prevetion, because even if an attacker were trying to maliciously replay
+    # the request, it embeds information that will always expire the session,
+    # namely, the request time and the prior request time. Both of these are
+    # included in the HMAC.
+    inactivity_timeout_seconds = get_setting(
+        'S_ARMOR_INACTIVITY_TIMEOUT_SECONDS', SECONDS_30_MINUTES)
+    if (int(request_header['t']) - int(request_header['lt']) >=
+            inactivity_timeout_seconds):
+        raise SessionExpired('Session expired due to inactivity')
+
     # Validate that the request has not expired (time-based replay prevention)
     # NB: This is done after HMAC validation
     request_duration_seconds = get_setting(
-        'S_ARMOR_REQUEST_SECONDS', SECONDS_5_MINUTES)
+        'S_ARMOR_REQUEST_VALID_SECONDS', SECONDS_5_MINUTES)
     if time.time() - int(request_header['t']) >= request_duration_seconds:
         raise RequestExpired()
 
@@ -729,11 +742,18 @@ def validate_request(request, request_header):
 
 
 def validate_session_expiry(request, request_header):
+    # Absolute expiration check
     _, _, expiration_time = decrypt_opaque(
         request_header['s'], request_header['ctr'], request_header['cm'])
-    # Session expiration check
     if expiration_time <= int(time.time()):
-        raise SessionExpired()
+        raise SessionExpired('Session expired due to absolute expiration time')
+
+    # Inactivity expiration check
+    inactivity_timeout_seconds = get_setting(
+        'S_ARMOR_INACTIVITY_TIMEOUT_SECONDS', SECONDS_30_MINUTES)
+    if (int(request_header['t']) - int(request_header['lt']) >=
+            inactivity_timeout_seconds):
+        raise SessionExpired('Session expired due to inactivity')
 
 
 def invalidate_session(request_header):
