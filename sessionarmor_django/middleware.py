@@ -296,14 +296,6 @@ AUTH_HEADER_MASKS = {name: (1 << i) for (i, name)
 NONCECACHE = caches['sessionarmor']
 
 
-class SessionExpired(Exception):
-    def __init__(self, message="The session has expired"):
-        self.message = message
-
-    def __str__(self):
-        return self.message
-
-
 class HmacInvalid(Exception):
     def __init__(self, message="The client's HMAC did not validate"):
         self.message = message
@@ -321,6 +313,14 @@ class OpaqueInvalid(Exception):
         return self.message
 
 
+class NonceInvalid(Exception):
+    def __init__(self, message="The replay-prevention nonce was invalid"):
+        self.message = message
+
+    def __str__(self):
+        return self.message
+
+
 class RequestExpired(Exception):
     def __init__(self, message="The request has expired"):
         self.message = message
@@ -329,8 +329,8 @@ class RequestExpired(Exception):
         return self.message
 
 
-class NonceInvalid(Exception):
-    def __init__(self, message="The replay-prevention nonce was invalid"):
+class SessionExpired(Exception):
+    def __init__(self, message="The session has expired"):
         self.message = message
 
     def __str__(self):
@@ -495,7 +495,7 @@ def select_hash_mask(packed_hash_mask):
         if bitmask[0] & hash_mask:
             return pack_mask(bitmask[0])
     raise HmacInvalid(
-        'Client ready header bitmask did not match any hash implementations.')
+        'Client ready header bitmask did not match any hash algorithms.')
 
 
 def is_modifying_session(response):
@@ -708,7 +708,6 @@ def validate_request(request, request_header):
     hmac_input = '|'.join(hmac_input)
 
     # Perform HMAC validation
-    import ipdb; ipdb.set_trace()
     our_mac = server_hmac(request_header['h'], hmac_key, hmac_input)
     hmac_valid = hmac.compare_digest(our_mac, request_header['c'])
 
@@ -806,7 +805,15 @@ class SessionArmorMiddleware(object):
         state = get_client_state(request_header)
 
         sessionid = None
-        if state == CLIENT_SIGNED_REQUEST:
+
+        if state == CLIENT_READY and request.is_secure():
+            try:
+                selected_hash_mask = select_hash_mask(request_header['r'])
+            except HmacInvalid as e:
+                # Client provided an invalid HMAC algo mask
+                LOGGER.debug(str(e))
+                raise PermissionDenied(str(e))
+        elif state == CLIENT_SIGNED_REQUEST:
             try:
                 sessionid = validate_request(request, request_header)
             except SessionExpired as e:
@@ -854,8 +861,13 @@ class SessionArmorMiddleware(object):
         state = get_client_state(request_header)
 
         if state == CLIENT_READY and request.is_secure() and sessionid:
-            response['X-S-Armor'] = begin_session(request_header, sessionid,
-                                                  self.packed_header_mask)
+            try:
+                response['X-S-Armor'] = begin_session(
+                    request_header, sessionid, self.packed_header_mask)
+            except HmacInvalid as e:
+                # If the algo mask was invalid then PermissionDenied was raised
+                # in ProcessRequest
+                return response
         elif state == CLIENT_SIGNED_REQUEST:
             # Session invalidation
             try:
