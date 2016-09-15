@@ -63,7 +63,11 @@ from django.core.exceptions import PermissionDenied
 
 COUNTER_BITS = 128
 RECIEPT_VECTOR_BITS = 64
-INITIAL_RECIEPT_VECTOR = (2 ** 64) - 1
+# All 1s followed by one 0
+# Meaning: The first nonce hasn't been seen yet, but don't allow any
+# lower-numbered invalid nonces.
+INITIAL_RECIEPT_VECTOR = ((2 ** RECIEPT_VECTOR_BITS) - 2)
+RECIEPT_VECTOR_MASK = (2 ** RECIEPT_VECTOR_BITS) - 1
 
 CLIENT_READY = 'ready'
 CLIENT_SIGNED_REQUEST = 'request'
@@ -313,16 +317,16 @@ class OpaqueInvalid(Exception):
         return self.message
 
 
-class NonceInvalid(Exception):
-    def __init__(self, message="The replay-prevention nonce was invalid"):
+class RequestExpired(Exception):
+    def __init__(self, message="The request has expired"):
         self.message = message
 
     def __str__(self):
         return self.message
 
 
-class RequestExpired(Exception):
-    def __init__(self, message="The request has expired"):
+class NonceInvalid(Exception):
+    def __init__(self, message="The replay-prevention nonce was invalid"):
         self.message = message
 
     def __str__(self):
@@ -647,12 +651,8 @@ def validate_nonce(request_nonce, sessionid):
     if nonce_tup:
         latest_nonce, reciept_vector = nonce_tup
     else:
-        latest_nonce, reciept_vector = (request_nonce - 1,
+        latest_nonce, reciept_vector = (request_nonce,
                                         INITIAL_RECIEPT_VECTOR)
-
-    if request_nonce == latest_nonce:
-        message = "Request nonce has been seen before"
-        raise NonceInvalid(message)
 
     delta = latest_nonce - request_nonce
 
@@ -663,7 +663,7 @@ def validate_nonce(request_nonce, sessionid):
         reciept_vector <<= -delta
         # And set that this new nonce has been seen
         reciept_vector |= 0x01
-    elif delta > 0 and delta < RECIEPT_VECTOR_BITS:
+    elif delta >= 0 and delta < RECIEPT_VECTOR_BITS:
         # This is a "past" nonce that we have the ability to check
         if reciept_vector & (1 << delta):
             message = "Request nonce has been seen before"
@@ -676,8 +676,9 @@ def validate_nonce(request_nonce, sessionid):
         message = "Nonce is too old to validate"
         raise NonceInvalid(message)
 
-    # Clamp to RECIEPT_VECTOR_BITS because Python will gladly shift to bigint
-    reciept_vector &= INITIAL_RECIEPT_VECTOR
+    # Clamp to RECIEPT_VECTOR_BITS because otherwise Python will gladly shift
+    # our vector into a bigint
+    reciept_vector &= RECIEPT_VECTOR_MASK
     NONCECACHE.set(sessionid, (latest_nonce, reciept_vector), None)
 
 
