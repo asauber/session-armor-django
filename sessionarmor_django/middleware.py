@@ -3,9 +3,9 @@ Session Armor Protocol, Django Middleware Implementation
 
 Copyright (C) 2015 - 2016 Andrew Sauber
 
-This software is licensed under AGPLv3 open source license. See LICENSE.txt
+This software is licensed under the AGPLv3 open source license. See LICENSE.txt
 
-Example configuration variables:
+Example configuration (place in your app's settings.py}:
 S_ARMOR_STRICT = True
 # 14 days
 S_ARMOR_SESSION_VALID_SECONDS = 1209600
@@ -29,9 +29,9 @@ S_ARMOR_AUTH_HEADERS = [
     'DNT',
     'X-Csrf-Token',
 ]
-# Must have a persistent Django cache named "sessionarmor" configured for this
-# feature to work
-# "persistent" means:
+# Must have a persistent Django cache named "sessionarmor" configured for the
+# nonce-based replay feature to work.
+# "Persistent" means that the cache is configured as follows:
 #   * TIMEOUT is set to None
 #   * MAX_ENTRIES is set larger than your max active sessions (maybe millions)
 #   * CULL_FREQUENCY is set to float('inf') or culling is disabled
@@ -302,6 +302,7 @@ NONCECACHE = caches['sessionarmor']
 
 class HmacInvalid(Exception):
     def __init__(self, message="The client's HMAC did not validate"):
+        super(HmacInvalid, self).__init__()
         self.message = message
 
     def __str__(self):
@@ -311,6 +312,7 @@ class HmacInvalid(Exception):
 class OpaqueInvalid(Exception):
     def __init__(self, message=
             "The opaque token from the client was not valid"):
+        super(OpaqueInvalid, self).__init__()
         self.message = message
 
     def __str__(self):
@@ -319,6 +321,7 @@ class OpaqueInvalid(Exception):
 
 class RequestExpired(Exception):
     def __init__(self, message="The request has expired"):
+        super(RequestExpired, self).__init__()
         self.message = message
 
     def __str__(self):
@@ -327,6 +330,7 @@ class RequestExpired(Exception):
 
 class NonceInvalid(Exception):
     def __init__(self, message="The replay-prevention nonce was invalid"):
+        super(NonceInvalid, self).__init__()
         self.message = message
 
     def __str__(self):
@@ -335,6 +339,7 @@ class NonceInvalid(Exception):
 
 class SessionExpired(Exception):
     def __init__(self, message="The session has expired"):
+        super(SessionExpired, self).__init__()
         self.message = message
 
     def __str__(self):
@@ -542,16 +547,20 @@ def encrypt_opaque(sessionid, hmac_key, expiration_time):
     cipher = AES.new(SECRET_KEY, AES.MODE_CTR, counter=counter)
     plaintext = '|'.join((sessionid, hmac_key, expiration_time))
     ciphertext = cipher.encrypt(plaintext)
+
     # Encrypt then MAC (EtM) provices integrity for the ciphertext and prevents
     # oracle attacks
-    mac = hmac.new(SECRET_KEY, ciphertext, hashlib.sha256)
+    mac = hmac.new(SECRET_KEY,
+                   int_to_bytes(ctr_init) + ciphertext, hashlib.sha256)
     ciphermac = mac.digest()
+
     return int_to_bytes(ctr_init), ciphermac, ciphertext
 
 
 def decrypt_opaque(opaque, ctr_init, ciphermac):
-    # MAC then Decrypt (MtD)
-    mac = hmac.new(SECRET_KEY, opaque, hashlib.sha256)
+    # MAC then Decrypt (MtD) provides integrity for the ciphertext and prevents
+    # oracle attacks
+    mac = hmac.new(SECRET_KEY, ctr_init + opaque, hashlib.sha256)
     if not hmac.compare_digest(mac.digest(), ciphermac):
         raise OpaqueInvalid(
             "Opaque token from the client failed to authenticate")
@@ -741,7 +750,7 @@ def validate_request(request, request_header):
     return sessionid
 
 
-def validate_session_expiry(request, request_header):
+def validate_session_expiry(request_header):
     # Absolute expiration check
     _, _, expiration_time = decrypt_opaque(
         request_header['s'], request_header['ctr'], request_header['cm'])
@@ -809,10 +818,13 @@ class SessionArmorMiddleware(object):
 
         if state == CLIENT_READY and request.is_secure():
             try:
-                selected_hash_mask = select_hash_mask(request_header['r'])
+                select_hash_mask(request_header['r'])
             except HmacInvalid as e:
                 # Client provided an invalid HMAC algo mask
                 LOGGER.debug(str(e))
+                # Need to raise PermissionDenied here rather than in
+                # process_response, otherwise the client will get a 500 rather
+                # than a 403.
                 raise PermissionDenied(str(e))
         elif state == CLIENT_SIGNED_REQUEST:
             try:
@@ -865,7 +877,7 @@ class SessionArmorMiddleware(object):
             try:
                 response['X-S-Armor'] = begin_session(
                     request_header, sessionid, self.packed_header_mask)
-            except HmacInvalid as e:
+            except HmacInvalid:
                 # If the algo mask was invalid then PermissionDenied was raised
                 # in ProcessRequest
                 return response
@@ -874,7 +886,7 @@ class SessionArmorMiddleware(object):
             try:
                 # Check if the session has expired
                 try:
-                    validate_session_expiry(request, request_header)
+                    validate_session_expiry(request_header)
                 except SessionExpired:
                     response['X-S-Armor'] = invalidate_session(request_header)
                 # Check if the server is deleting the session, e.g. a logout
