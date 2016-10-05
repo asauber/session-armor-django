@@ -3,7 +3,9 @@ Session Armor Protocol, Django Middleware Implementation
 
 Copyright (C) 2015 - 2016 Andrew Sauber
 
-This software is licensed under the AGPLv3 open source license. See LICENSE.txt
+This software is licensed under the AGPLv3 open source license. See
+LICENSE.txt. The license can also be found at the following URL, please note
+the above copyright notice. https://www.gnu.org/licenses/agpl-3.0.en.html
 
 Example configuration (place in your app's settings.py}:
 S_ARMOR_STRICT = True
