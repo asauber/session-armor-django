@@ -47,21 +47,22 @@ S_ARMOR_EXTRA_AUTHENTICATED_HEADERS = [
 
 
 import base64
+from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+from cryptography.exceptions import InvalidTag
+from datetime import datetime, timedelta
 import hashlib
 import hmac
 import json
 import logging
+import os
+import struct
 import time
-from datetime import datetime, timedelta
 
-from Crypto import Random
-from Crypto.Cipher import AES
-from Crypto.Random import random as crypt_random
-from Crypto.Util import Counter
 from django.conf import settings
 from django.contrib.sessions.exceptions import InvalidSessionKey
 from django.core.cache import caches
 from django.core.exceptions import PermissionDenied
+
 
 COUNTER_BITS = 128
 RECIEPT_VECTOR_BITS = 64
@@ -88,10 +89,10 @@ SECONDS_30_MINUTES = 1800
 
 LOGGER = logging.getLogger(__name__)
 
-assert len(settings.SECRET_KEY) >= AES.block_size, \
-    "Django settings.SECRET_KEY must be at least {} bytes".format(
-        AES.block_size)
-SECRET_KEY = bytes(settings.SECRET_KEY[:AES.block_size])
+assert len(settings.SECRET_KEY) >= 32, \
+    "Django settings.SECRET_KEY must be at least {} bytes".format(32)
+# use the first 256 bits of the Django SECRET_KEY as the AES key
+SECRET_KEY = bytes(settings.SECRET_KEY[:32])
 
 DEFAULT_AUTH_HEADERS = [
     'Host',
@@ -553,42 +554,43 @@ def generate_hmac_key():
     """
     Generate a new key for use by the client and server to sign requests
     """
-    return Random.new().read(AES.block_size)
+    return os.urandom(16)
 
 
-def encrypt_opaque(sessionid, hmac_key, expiration_time):
-    ctr_init = crypt_random.getrandbits(COUNTER_BITS)
-    counter = Counter.new(COUNTER_BITS, initial_value=ctr_init)
-    cipher = AES.new(SECRET_KEY, AES.MODE_CTR, counter=counter)
+def encrypt_opaque(sessionid, hmac_key, expiration_time,
+                   hash_mask, auth_headers, extra_auth_headers):
+    import ipdb; ipdb.set_trace()
+
+    aesgcm = AESGCM(SECRET_KEY)
+    # start the nonce off with the current epoch time
+    nonce = struct.pack(">I", int(time.time()))
+    # add 8 random bytes for a total of 128 bits
+    nonce += os.urandom(8)
+
     plaintext = '|'.join((sessionid, hmac_key, expiration_time))
-    ciphertext = cipher.encrypt(plaintext)
+    auth_data = '|'.join((hash_mask, auth_headers, extra_auth_headers))
 
-    # Encrypt then MAC (EtM) provides integrity for the ciphertext and prevents
-    # oracle attacks
-    mac = hmac.new(SECRET_KEY,
-                   int_to_bytes(ctr_init) + ciphertext, hashlib.sha256)
-    ciphermac = mac.digest()
-
-    return int_to_bytes(ctr_init), ciphermac, ciphertext
+    ciphertext = aesgcm.encrypt(nonce, plaintext, auth_data)
+    ciphertext, tag = ciphertext[:-16], ciphertext[-16:]
+    return ciphertext, nonce, tag
 
 
-def decrypt_opaque(opaque, ctr_init, ciphermac):
-    # MAC then Decrypt (MtD) provides integrity for the ciphertext and prevents
-    # oracle attacks
-    mac = hmac.new(SECRET_KEY, ctr_init + opaque, hashlib.sha256)
-    if not hmac.compare_digest(mac.digest(), ciphermac):
+def decrypt_opaque(opaque, nonce, tag
+                   hash_mask, auth_headers, extra_auth_headers):
+    aesgcm = AESGCM(SECRET_KEY)
+    
+    auth_data = '|'.join((hash_mask, auth_headers, extra_auth_headers))
+
+    try:
+        plaintext = aesgcm.decrypt(nonce, ciphertext + tag, auth_data)
+    except InvalidTag:
         raise OpaqueInvalid(
             "Opaque token from the client failed to authenticate")
 
-    ctr_init = bytes_to_int(ctr_init)
-    counter = Counter.new(COUNTER_BITS, initial_value=ctr_init)
-    cipher = AES.new(SECRET_KEY, AES.MODE_CTR, counter=counter)
-    plaintext = cipher.decrypt(opaque)
-
     try:
         sessionid, remainder = plaintext.split('|', 1)
-        hmac_key, expiration_time = (remainder[:AES.block_size],
-                                     remainder[AES.block_size + 1:])
+        hmac_key, expiration_time = (remainder[:16],
+                                     remainder[16:])
     except ValueError:
         raise OpaqueInvalid(
             "Plaintext from opaque token didn't have required fields")
@@ -606,26 +608,28 @@ def begin_session(header, sessionid, packed_header_mask):
     # Components: Session ID, HMAC Key, Expiration Time
     hmac_key = generate_hmac_key()
     expiration_time = get_expiration_second()
-    counter_init, ciphermac, opaque = encrypt_opaque(
-        sessionid, hmac_key, expiration_time)
     packed_hash_mask = select_hash_mask(header['r'])
+    
+    eah = get_setting('S_ARMOR_EXTRA_AUTHENTICATED_HEADERS', [])
+    
+    opaque, iv, tag = encrypt_opaque(sessionid, hmac_key, expiration_time,
+                            packed_hash_mask, packed_header_mask, eah)
 
     kvs = [
         ('s', opaque),
-        ('ctr', counter_init),
-        ('cm', ciphermac),
+        ('iv', iv),
+        ('tag', tag),
         ('kh', hmac_key),
         ('h', packed_hash_mask),
         ('ah', packed_header_mask)
     ]
-
-    if using_nonce_replay_prevention(packed_header_mask):
-        n = crypt_random.getrandbits(32)
-        kvs.append(('n', int_to_bytes(n)))
-
-    eah = get_setting('S_ARMOR_EXTRA_AUTHENTICATED_HEADERS', [])
+    
     if eah:
         kvs.append(('eah', ",".join(eah)))
+
+    if using_nonce_replay_prevention(packed_header_mask):
+        n = os.urandom(4)
+        kvs.append(('n', n))
 
     return tuples_to_header(kvs)
 
@@ -718,7 +722,6 @@ def validate_request(request, request_header):
     # Performs time-based and nonce-based replay prevention if present
 
     # Rebuild HMAC input
-    import ipdb; ipdb.set_trace()
     using_nonce = using_nonce_replay_prevention(request_header['ah'])
     hmac_input = [request_header['n'], '+'] if using_nonce else ['+']
     hmac_input.append(request_header['t'])
@@ -861,8 +864,7 @@ class SessionArmorMiddleware(object):
 
         if sa_sessionid:
             request.COOKIES[settings.SESSION_COOKIE_NAME] = sa_sessionid
-        else:
-            return
+
 
     def process_response(self, request, response):
         '''

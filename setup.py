@@ -10,4 +10,5 @@ setup(
     author_email='a3sauber@gmail.com',
     url='https://www.bitbucket.org/asauber/session-armor-django',
     keywords=['django','authentication','middleware','HTTP'],
+    install_requires=['cryptography',],
 )
