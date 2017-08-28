@@ -296,7 +296,10 @@ ALL_AUTH_HEADERS = [
     'MIME-Version'
 ]
 
-AUTH_HEADER_MASKS = {name: (1 << i) for (i, name)
+# Create a dictionary of masks for the headers which can be authenticated.
+# Shift them by thier (index + 1) to leave room for the nonce-based-replay
+# prevention indicator.
+AUTH_HEADER_MASKS = {name: (1 << (i + 1)) for (i, name)
                      in enumerate(ALL_AUTH_HEADERS)}
 
 NONCECACHE = caches['sessionarmor']
@@ -348,10 +351,15 @@ class SessionExpired(Exception):
         return self.message
 
 
-def gen_header_mask(auth_headers):
+def gen_header_mask(auth_headers, absolute_replay_prevention):
     mask = 0
+
     for header in auth_headers:
         mask |= AUTH_HEADER_MASKS[header]
+
+    if absolute_replay_prevention:
+        mask |= 0x01
+
     return pack_mask(mask)
 
 
@@ -361,7 +369,7 @@ def parse_header_mask(header_mask):
     bit_n = 0
     while mask:
         if mask & 0x01:
-            headers.append(ALL_AUTH_HEADERS[bit_n])
+            headers.append(ALL_AUTH_HEADERS[bit_n - 1])
         mask >>= 1
         bit_n += 1
     return headers
@@ -429,8 +437,8 @@ def pack_mask(mask):
     pack an integer as a byte string with this format
     bit length of mask cannot exceed 256
 
-    byte0       byte1, byte2 ...
     <num_bytes> <little-endian bytestring>
+    byte0       byte1, byte2 ...
     '''
     data = int_to_bytes(mask)
     data = chr(len(data)) + data
@@ -441,11 +449,16 @@ def unpack_mask(data):
     '''
     unpack a byte string as an integer with this format
 
-    byte0       byte1, byte2 ...
     <num_bytes> <little-endian bytestring>
+    byte0       byte1, byte2 ...
     '''
     mask = bytes_to_int(data[1:])
     return mask
+
+
+def using_nonce_replay_prevention(data):
+    mask = bytes_to_int(data[-1])
+    return mask & 0x01
 
 
 def int_to_bytes(i):
@@ -550,7 +563,7 @@ def encrypt_opaque(sessionid, hmac_key, expiration_time):
     plaintext = '|'.join((sessionid, hmac_key, expiration_time))
     ciphertext = cipher.encrypt(plaintext)
 
-    # Encrypt then MAC (EtM) provices integrity for the ciphertext and prevents
+    # Encrypt then MAC (EtM) provides integrity for the ciphertext and prevents
     # oracle attacks
     mac = hmac.new(SECRET_KEY,
                    int_to_bytes(ctr_init) + ciphertext, hashlib.sha256)
@@ -606,7 +619,7 @@ def begin_session(header, sessionid, packed_header_mask):
         ('ah', packed_header_mask)
     ]
 
-    if get_setting('S_ARMOR_NONCE_REPLAY_PREVENTION', False):
+    if using_nonce_replay_prevention(packed_header_mask):
         n = crypt_random.getrandbits(32)
         kvs.append(('n', int_to_bytes(n)))
 
@@ -705,7 +718,8 @@ def validate_request(request, request_header):
     # Performs time-based and nonce-based replay prevention if present
 
     # Rebuild HMAC input
-    using_nonce = bool(request_header.get('n', None))
+    import ipdb; ipdb.set_trace()
+    using_nonce = using_nonce_replay_prevention(request_header['ah'])
     hmac_input = [request_header['n'], '+'] if using_nonce else ['+']
     hmac_input.append(request_header['t'])
     hmac_input.append(request_header['lt'])
@@ -729,9 +743,9 @@ def validate_request(request, request_header):
     # If the request is valid, but too much time has elapsed since the prior
     # request, expire the session. Note that it's fine to do this before replay
     # prevetion, because even if an attacker were trying to maliciously replay
-    # the request, it embeds information that will always expire the session,
-    # namely, the request time and the prior request time. Both of these are
-    # included in the HMAC.
+    # the request, the authenticated request embeds information that will
+    # always expire the session, namely, the request time and the prior request
+    # time. Both of these are included in the HMAC.
     inactivity_timeout_seconds = get_setting(
         'S_ARMOR_INACTIVITY_TIMEOUT_SECONDS', SECONDS_30_MINUTES)
     if (int(request_header['t']) - int(request_header['lt']) >=
@@ -752,21 +766,6 @@ def validate_request(request, request_header):
     return sessionid
 
 
-def validate_session_expiry(request_header):
-    # Absolute expiration check
-    _, _, expiration_time = decrypt_opaque(
-        request_header['s'], request_header['ctr'], request_header['cm'])
-    if expiration_time <= int(time.time()):
-        raise SessionExpired('Session expired due to absolute expiration time')
-
-    # Inactivity expiration check
-    inactivity_timeout_seconds = get_setting(
-        'S_ARMOR_INACTIVITY_TIMEOUT_SECONDS', SECONDS_30_MINUTES)
-    if (int(request_header['t']) - int(request_header['lt']) >=
-            inactivity_timeout_seconds):
-        raise SessionExpired('Session expired due to inactivity')
-
-
 def invalidate_session(request_header):
     _, hmac_key, _ = decrypt_opaque(
         request_header['s'], request_header['ctr'], request_header['cm'])
@@ -785,9 +784,12 @@ class SessionArmorMiddleware(object):
     def __init__(self):
         self.strict = get_setting('S_ARMOR_STRICT', False)
 
-        auth_headers = get_setting('S_ARMOR_AUTH_HEADERS',
-                                   DEFAULT_AUTH_HEADERS)
-        self.packed_header_mask = gen_header_mask(auth_headers)
+        auth_headers = get_setting(
+                'S_ARMOR_AUTH_HEADERS', DEFAULT_AUTH_HEADERS)
+        nonce_replay_prevention = get_setting(
+                'S_ARMOR_NONCE_REPLAY_PREVENTION', None)
+        self.packed_header_mask = gen_header_mask(
+                auth_headers, nonce_replay_prevention)
 
     def process_request(self, request):
         '''
@@ -816,7 +818,7 @@ class SessionArmorMiddleware(object):
         request_header = header_to_dict(header_str)
         state = get_client_state(request_header)
 
-        sessionid = None
+        sa_sessionid = None
 
         if state == CLIENT_READY and request.is_secure():
             try:
@@ -830,12 +832,15 @@ class SessionArmorMiddleware(object):
                 raise PermissionDenied(str(e))
         elif state == CLIENT_SIGNED_REQUEST:
             try:
-                sessionid = validate_request(request, request_header)
+                sa_sessionid = validate_request(request, request_header)
             except SessionExpired as e:
                 LOGGER.debug(str(e))
                 # Return before injeting the session cookie. The request will
                 # be processed without a user object. This allows session
-                # invalidation to proceed in process_response.
+                # invalidation to proceed in process_response. We add a header
+                # to the request that process_response can pick up to invalidate
+                # the session
+                request.META['HTTP_X_S_ARMOR_INVALIDATE'] = 'True'
                 return
             except OpaqueInvalid as e:
                 # Client provided an invalid symmetrically encrypted token
@@ -854,8 +859,8 @@ class SessionArmorMiddleware(object):
                 LOGGER.debug(str(e))
                 raise PermissionDenied(str(e))
 
-        if sessionid:
-            request.COOKIES[settings.SESSION_COOKIE_NAME] = sessionid
+        if sa_sessionid:
+            request.COOKIES[settings.SESSION_COOKIE_NAME] = sa_sessionid
         else:
             return
 
@@ -885,19 +890,12 @@ class SessionArmorMiddleware(object):
                 return response
         elif state == CLIENT_SIGNED_REQUEST:
             # Session invalidation
-            try:
-                # Check if the session has expired
-                try:
-                    validate_session_expiry(request_header)
-                except SessionExpired:
-                    response['X-S-Armor'] = invalidate_session(request_header)
-                # Check if the server is deleting the session, e.g. a logout
-                # view has executed.
-                if sessionid == '':
-                    response['X-S-Armor'] = invalidate_session(request_header)
-            except OpaqueInvalid:
-                # Can't raise PermissionDenied; it won't be caught by Django.
-                # We have already risen it above if the opaque is invalid.
-                return response
+            # Check if the session has expired
+            if request.META.get('HTTP_X_S_ARMOR_INVALIDATE', None):
+                response['X-S-Armor'] = invalidate_session(request_header)
+            # Check if the server is deleting the session, e.g. a logout
+            # view has executed.
+            elif sessionid == '':
+                response['X-S-Armor'] = invalidate_session(request_header)
 
         return response
