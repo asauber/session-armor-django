@@ -559,8 +559,6 @@ def generate_hmac_key():
 
 def encrypt_opaque(sessionid, hmac_key, expiration_time,
                    hash_mask, auth_headers, extra_auth_headers):
-    import ipdb; ipdb.set_trace()
-
     aesgcm = AESGCM(SECRET_KEY)
     # start the nonce off with the current epoch time
     nonce = struct.pack(">I", int(time.time()))
@@ -575,22 +573,21 @@ def encrypt_opaque(sessionid, hmac_key, expiration_time,
     return ciphertext, nonce, tag
 
 
-def decrypt_opaque(opaque, nonce, tag
+def decrypt_opaque(opaque, nonce, tag,
                    hash_mask, auth_headers, extra_auth_headers):
     aesgcm = AESGCM(SECRET_KEY)
     
     auth_data = '|'.join((hash_mask, auth_headers, extra_auth_headers))
 
     try:
-        plaintext = aesgcm.decrypt(nonce, ciphertext + tag, auth_data)
+        plaintext = aesgcm.decrypt(nonce, opaque + tag, auth_data)
     except InvalidTag:
         raise OpaqueInvalid(
             "Opaque token from the client failed to authenticate")
 
     try:
         sessionid, remainder = plaintext.split('|', 1)
-        hmac_key, expiration_time = (remainder[:16],
-                                     remainder[16:])
+        hmac_key, expiration_time = (remainder[:16], remainder[17:])
     except ValueError:
         raise OpaqueInvalid(
             "Plaintext from opaque token didn't have required fields")
@@ -611,6 +608,8 @@ def begin_session(header, sessionid, packed_header_mask):
     packed_hash_mask = select_hash_mask(header['r'])
     
     eah = get_setting('S_ARMOR_EXTRA_AUTHENTICATED_HEADERS', [])
+    if eah:
+        eah = ','.join(eah)
     
     opaque, iv, tag = encrypt_opaque(sessionid, hmac_key, expiration_time,
                             packed_hash_mask, packed_header_mask, eah)
@@ -625,7 +624,7 @@ def begin_session(header, sessionid, packed_header_mask):
     ]
     
     if eah:
-        kvs.append(('eah', ",".join(eah)))
+        kvs.append(('eah', eah))
 
     if using_nonce_replay_prevention(packed_header_mask):
         n = os.urandom(4)
@@ -711,8 +710,13 @@ def validate_nonce(request_nonce, sessionid):
 
 
 def validate_request(request, request_header):
+    hash_mask = request_header['h']
+    auth_headers = request_header['ah']
+    extra_headers = request_header.get('eah', None)
+
     sessionid, hmac_key, expiration_time = decrypt_opaque(
-        request_header['s'], request_header['ctr'], request_header['cm'])
+        request_header['s'], request_header['iv'], request_header['tag'],
+        hash_mask, auth_headers, extra_headers)
 
     # Session expiration check
     if expiration_time <= int(time.time()):
@@ -726,7 +730,6 @@ def validate_request(request, request_header):
     hmac_input = [request_header['n'], '+'] if using_nonce else ['+']
     hmac_input.append(request_header['t'])
     hmac_input.append(request_header['lt'])
-    extra_headers = request_header.get('eah', None)
     extra_headers = extra_headers.split(',') if extra_headers else []
     hmac_input += auth_header_values(request, request_header['ah'],
                                      extra_headers)
@@ -770,8 +773,12 @@ def validate_request(request, request_header):
 
 
 def invalidate_session(request_header):
+    hash_mask = request_header['h']
+    auth_headers = request_header['ah']
+    extra_headers = request_header.get('eah', None)
     _, hmac_key, _ = decrypt_opaque(
-        request_header['s'], request_header['ctr'], request_header['cm'])
+        request_header['s'], request_header['iv'], request_header['tag'],
+        hash_mask, auth_headers, extra_headers)
     mac = server_hmac(request_header['h'], hmac_key, 'Session Expired')
     return tuples_to_header((('i', mac),))
 
