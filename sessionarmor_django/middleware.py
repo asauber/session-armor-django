@@ -365,7 +365,7 @@ def gen_header_mask(auth_headers, absolute_replay_prevention):
 
 
 def parse_header_mask(header_mask):
-    mask = bytes_to_int(header_mask)
+    mask = bytes_to_int(header_mask[1:])
     headers = []
     bit_n = 0
     while mask:
