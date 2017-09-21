@@ -63,7 +63,6 @@ from django.contrib.sessions.exceptions import InvalidSessionKey
 from django.core.cache import caches
 from django.core.exceptions import PermissionDenied
 
-
 COUNTER_BITS = 128
 RECIEPT_VECTOR_BITS = 64
 # All 1s followed by one 0
